@@ -1,3 +1,4 @@
+ import groovy.json.JsonSlurper
  pipeline {
 
   agent any
@@ -108,7 +109,6 @@
       }
     }
 
-import groovy.json.JsonSlurper
 
 stage('Trivy Scan') {
   steps {
