@@ -113,28 +113,46 @@ stage('Trivy Scan') {
     script {
       sh(params.DEBUG_MODE ? "set -x ; true" : "true")
       
-      // Run Trivy and capture both stdout and stderr into trivy.txt
+      echo "🔍 Running Trivy scan on ${FULL_IMAGE} (JSON output)..."
+
+      // Run Trivy with JSON output and capture both stdout and stderr
       sh """
-         trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} 2>&1 | tee trivy.txt || true
+         trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} 2>&1 | tee trivy.json || true
       """
 
-      // Check for HIGH/CRITICAL vulnerabilities
-      def critical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
-      
-      // Save the Trivy report
-      archiveArtifacts artifacts: 'trivy.txt', allowEmptyArchive: true
+      // Archive the JSON report
+      archiveArtifacts artifacts: 'trivy.json', allowEmptyArchive: true
+
+      // Read and parse JSON
+      def trivyReport = readJSON file: 'trivy.json'
+
+      // Count HIGH/CRITICAL vulnerabilities
+      def criticalCount = 0
+      trivyReport.Results.each { result ->
+        if (result.Vulnerabilities) {
+          criticalCount += result.Vulnerabilities.size()
+        }
+      }
+
+      echo "⚠ Number of HIGH/CRITICAL vulnerabilities found: ${criticalCount}"
 
       // Fail or mark UNSTABLE based on parameters
-      if (critical && params.TRIVY_FAIL_ACTION == 'fail-build') {
-        error "❌ Trivy HIGH/CRITICAL vulnerability check failed."
+      if (criticalCount > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
+        error "❌ Trivy HIGH/CRITICAL vulnerability check failed with ${criticalCount} vulnerabilities."
       }
-      if (critical) {
+
+      if (criticalCount > 0 && params.TRIVY_FAIL_ACTION != 'fail-build') {
         currentBuild.result = 'UNSTABLE'
         echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
+      }
+
+      if (criticalCount == 0) {
+        echo "✅ No HIGH/CRITICAL vulnerabilities found."
       }
     }
   }
 }
+
 
 
 
