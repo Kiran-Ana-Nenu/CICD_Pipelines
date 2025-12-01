@@ -108,50 +108,43 @@
       }
     }
 
+import groovy.json.JsonSlurper
+
 stage('Trivy Scan') {
   steps {
     script {
-      sh(params.DEBUG_MODE ? "set -x ; true" : "true")
-      
-      echo "🔍 Running Trivy scan on ${FULL_IMAGE} (JSON output)..."
+      echo "🔍 Running Trivy scan on ${FULL_IMAGE} (JSON output only)..."
 
-      // Run Trivy with JSON output and capture both stdout and stderr
-      sh """
-         trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} 2>&1 | tee trivy.json || true
-      """
+      // Save JSON only
+      sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} -o trivy.json || true"
 
-      // Archive the JSON report
       archiveArtifacts artifacts: 'trivy.json', allowEmptyArchive: true
 
-      // Read and parse JSON
-      def trivyReport = readJSON file: 'trivy.json'
+      // Read JSON safely
+      def jsonText = readFile('trivy.json')
+      def json = new JsonSlurper().parseText(jsonText)
 
-      // Count HIGH/CRITICAL vulnerabilities
       def criticalCount = 0
-      trivyReport.Results.each { result ->
-        if (result.Vulnerabilities) {
-          criticalCount += result.Vulnerabilities.size()
-        }
+      json.Results.each { result ->
+          if (result.Vulnerabilities) {
+              criticalCount += result.Vulnerabilities.size()
+          }
       }
 
       echo "⚠ Number of HIGH/CRITICAL vulnerabilities found: ${criticalCount}"
 
-      // Fail or mark UNSTABLE based on parameters
       if (criticalCount > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-        error "❌ Trivy HIGH/CRITICAL vulnerability check failed with ${criticalCount} vulnerabilities."
-      }
-
-      if (criticalCount > 0 && params.TRIVY_FAIL_ACTION != 'fail-build') {
-        currentBuild.result = 'UNSTABLE'
-        echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
-      }
-
-      if (criticalCount == 0) {
-        echo "✅ No HIGH/CRITICAL vulnerabilities found."
+          error "❌ Trivy HIGH/CRITICAL vulnerability check failed with ${criticalCount} vulnerabilities."
+      } else if (criticalCount > 0) {
+          currentBuild.result = 'UNSTABLE'
+          echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
+      } else {
+          echo "✅ No HIGH/CRITICAL vulnerabilities found."
       }
     }
   }
 }
+
 
 
 
