@@ -1,7 +1,10 @@
  pipeline {
 
   agent any
-
+  tools {
+    jdk 'jdk-21'          // ensure JDK 21 is configured in Jenkins Global Tool Config
+    maven 'maven-3.9.9'   // ensure Maven tool exists
+  }
   parameters {
     string(name: 'GIT_REF', defaultValue: 'release/1.0', description: 'Branch (release/*) or tag (v*)')
     booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip Maven tests?')
@@ -18,6 +21,13 @@
   }
 
   stages {
+
+    stage('Clean Workspace (Pre-build)') {
+      when { expression { return params.CLEAN_BEFORE } }
+      steps {
+        echo "🧹 Cleaning workspace before build..."
+        cleanWs()
+      }
 
     stage('Debug Info (Optional)') {
       when { expression { return params.DEBUG_MODE } }
