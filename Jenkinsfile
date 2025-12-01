@@ -78,21 +78,30 @@
       }
     }
 
-    stage('Maven Build') {
-      steps {
-        script {
-          sh(params.DEBUG_MODE ? "set -x ; true" : "true")
-          def skip = params.SKIP_TESTS ? "-DskipTests=true" : ""
-          sh "mvn -B clean install ${skip}"
-        }
-      }
-      post {
-        always {
-          junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
-          archiveArtifacts allowEmptyArchive: true, artifacts: '**/target/*.jar'
-        }
-      }
+stage('Maven Build') {
+  steps {
+    script {
+      sh(params.DEBUG_MODE ? "set -x ; true" : "true")
+
+      // 1️⃣ Update dependencies to the latest release versions
+      sh "mvn versions:use-latest-releases -DgenerateBackupPoms=false"
+
+      // 2️⃣ Optional: update plugins to latest versions too
+      // sh "mvn versions:use-latest-versions -DgenerateBackupPoms=false"
+
+      // 3️⃣ Build
+      def skip = params.SKIP_TESTS ? "-DskipTests=true" : ""
+      sh "mvn -B clean install ${skip}"
     }
+  }
+  post {
+    always {
+      junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+      archiveArtifacts allowEmptyArchive: true, artifacts: '**/target/*.jar'
+    }
+  }
+}
+
 
     stage('Docker Build (no cache + optimized)') {
       steps {
