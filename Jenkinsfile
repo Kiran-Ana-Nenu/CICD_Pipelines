@@ -30,24 +30,24 @@
       }
     }
 
-    stage('Debug Info (Optional)') {
-      when { expression { return params.DEBUG_MODE } }
-      steps {
-        echo "🔍 DEBUG MODE ENABLED"
-        sh '''
-          echo "===== SYSTEM DEBUG INFO ====="
-          echo "Hostname: $(hostname)"
-          echo "User: $(whoami)"
-          echo "Workspace: $WORKSPACE"
-          echo "===== ENVIRONMENT ====="
-          env | sort
-          echo "===== DOCKER VERSION ====="
-          docker --version || true
-          echo "===== MAVEN VERSION ====="
-          mvn --version || true
-        '''
-      }
-    }
+    // stage('Debug Info (Optional)') {
+    //   when { expression { return params.DEBUG_MODE } }
+    //   steps {
+    //     echo "🔍 DEBUG MODE ENABLED"
+    //     sh '''
+    //       echo "===== SYSTEM DEBUG INFO ====="
+    //       echo "Hostname: $(hostname)"
+    //       echo "User: $(whoami)"
+    //       echo "Workspace: $WORKSPACE"
+    //       echo "===== ENVIRONMENT ====="
+    //       env | sort
+    //       echo "===== DOCKER VERSION ====="
+    //       docker --version || true
+    //       echo "===== MAVEN VERSION ====="
+    //       mvn --version || true
+    //     '''
+    //   }
+    // }
 
     stage('Validate Git Ref') {
       steps {
