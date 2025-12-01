@@ -1,39 +1,35 @@
 pipeline {
-  agent none
+
+  // 👇 This is the only agent definition — Jenkins will pick the default executor automatically
+  agent any
 
   parameters {
-    // choice(name: 'BUILD_SLAVE', choices: ['Build-T','Build-M','Build-R'], description: 'Select dynamic slave label')
     string(name: 'GIT_REF', defaultValue: 'release/1.0', description: 'Branch (release/*) or tag (v*)')
     booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip Maven tests?')
     choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build','warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
   }
 
   environment {
-    // 🔥 You provide these in Jenkins > Manage > System > Global properties OR in the Pipeline job
-    GIT_URL        = "https://github.com/Kiran-Ana-Nenu/Springboot_App.git"         // <── injected as environment variable
-    DOCKER_HUB_URL = "https://index.docker.io/v1/"               // <── used for login
-    DOCKER_REPO    = "kiranpayyavuala/sslexpire_application"                // <── org/repo (image name)
-    
+    // 👇 Provided from Jenkins global env or job env
+    GIT_URL        = "https://example.com/your/repo.git"
+    DOCKER_HUB_URL = "https://index.docker.io/v1/"
+    DOCKER_REPO    = "yourdockerusername/yourapp"
+
     DOCKER_CREDENTIALS_ID = "dockerhub-creds"
-    MAVEN_OPTS = "-Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
   }
 
   stages {
-
-    // stage('Allocate Agent') {
-    //   agent { label "${params.BUILD_SLAVE}" }
-    // }
 
     stage('Validate Git Ref') {
       steps {
         script {
           def ref = params.GIT_REF.trim()
           if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            error "Invalid ref: ${ref}. Only v* tags or release* branches allowed."
+            error "❌ Invalid ref: '${ref}'. Allowed: tag v* or branch release*."
           }
-          env.REF_SANITIZED = ref.replaceAll('/', '-')
-          env.IMAGE_TAG = env.REF_SANITIZED
+          env.IMAGE_TAG = ref.replaceAll('/', '-')
           env.FULL_IMAGE = "${env.DOCKER_REPO}:${env.IMAGE_TAG}"
+          echo "IMAGE_TAG = ${env.IMAGE_TAG}"
           echo "FULL_IMAGE = ${env.FULL_IMAGE}"
         }
       }
@@ -51,30 +47,22 @@ pipeline {
     stage('Maven Build') {
       steps {
         script {
-          def skipFlag = params.SKIP_TESTS ? "-DskipTests=true" : ""
-          sh "mvn -B clean install ${skipFlag}"
-        }
-      }
-      post {
-        always {
-          junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+          def skip = params.SKIP_TESTS ? "-DskipTests=true" : ""
+          sh "mvn -B clean install ${skip}"
         }
       }
     }
 
-    stage('Docker Build (Optimized)') {
+    stage('Docker Build (no cache + optimized)') {
       steps {
-        script {
-          // 🔥 --no-cache + BuildArgs for multistage Dockerfile optimizations
-          sh """
-            echo "Building Docker image WITHOUT cache: ${FULL_IMAGE}"
-            docker build \\
-              --no-cache \\
-              --build-arg GIT_REF=${params.GIT_REF} \\
-              --build-arg APP_VERSION=${env.IMAGE_TAG} \\
-              -t ${FULL_IMAGE} .
-          """
-        }
+        sh """
+          echo "Building Docker image: ${FULL_IMAGE}"
+          docker build \\
+            --no-cache \\
+            --build-arg GIT_REF=${params.GIT_REF} \\
+            --build-arg APP_VERSION=${env.IMAGE_TAG} \\
+            -t ${FULL_IMAGE} .
+        """
       }
     }
 
@@ -82,18 +70,22 @@ pipeline {
       steps {
         script {
           sh "trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} || true | tee trivy.txt"
-          def hasCritical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
-          if (hasCritical && params.TRIVY_FAIL_ACTION == 'fail-build') {
-            error "Trivy found HIGH/CRITICAL vulnerabilities."
+
+          def critical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
+          if (critical && params.TRIVY_FAIL_ACTION == 'fail-build') {
+            error "❌ Trivy found HIGH/CRITICAL vulnerabilities."
           }
-          if (hasCritical) {
+          if (critical) {
             currentBuild.result = 'UNSTABLE'
+            echo "⚠ Trivy found HIGH/CRITICAL issues — build marked UNSTABLE."
+          } else {
+            echo "✔ No HIGH/CRITICAL vulnerabilities."
           }
         }
       }
     }
 
-    stage('Push to Docker Hub') {
+    stage('Push Image to Docker Hub') {
       steps {
         script {
           withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
@@ -110,13 +102,13 @@ pipeline {
 
   post {
     success {
-      echo "🎉 Build Successful. Docker pushed: ${env.FULL_IMAGE}"
+      echo "🎉 SUCCESS — Docker pushed: ${env.FULL_IMAGE}"
     }
     unstable {
-      echo "⚠ Build unstable (Trivy warnings). Image pushed: ${env.FULL_IMAGE}"
+      echo "⚠ UNSTABLE — Docker pushed (Trivy warnings): ${env.FULL_IMAGE}"
     }
     failure {
-      echo "❌ Build failed."
+      echo "❌ FAILED — Check Jenkins logs"
     }
   }
 }
