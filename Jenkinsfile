@@ -7,6 +7,7 @@
 //   }
   parameters {
     string(name: 'GIT_REF', defaultValue: 'release/1.0', description: 'Branch (release/*) or tag (v*)')
+    booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
     booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip Maven tests?')
     choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build','warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
     booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
@@ -21,14 +22,14 @@
   }
 
   stages {
+        stage('Clean Workspace (Pre-build)') {
+            when { expression { params.CLEAN_BEFORE } }
+            steps {
+                echo "🧹 Cleaning workspace before build..."
+                cleanWs()
+            }
+        }
 
-    stage('Clean Workspace (Pre-build)') {
-      when { expression { return params.CLEAN_BEFORE } }
-      steps {
-        echo "🧹 Cleaning workspace before build..."
-        cleanWs()
-      }
-    }
 
     // stage('Debug Info (Optional)') {
     //   when { expression { return params.DEBUG_MODE } }
