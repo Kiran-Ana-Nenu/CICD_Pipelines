@@ -112,11 +112,19 @@ stage('Trivy Scan') {
   steps {
     script {
       sh(params.DEBUG_MODE ? "set -x ; true" : "true")
-      sh "trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} || true | tee trivy.txt"
+      
+      // Run Trivy and capture both stdout and stderr into trivy.txt
+      sh """
+         trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} 2>&1 | tee trivy.txt || true
+      """
 
+      // Check for HIGH/CRITICAL vulnerabilities
       def critical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
+      
+      // Save the Trivy report
       archiveArtifacts artifacts: 'trivy.txt', allowEmptyArchive: true
 
+      // Fail or mark UNSTABLE based on parameters
       if (critical && params.TRIVY_FAIL_ACTION == 'fail-build') {
         error "❌ Trivy HIGH/CRITICAL vulnerability check failed."
       }
@@ -127,6 +135,7 @@ stage('Trivy Scan') {
     }
   }
 }
+
 
 
     stage('Push Image to Docker Hub') {
