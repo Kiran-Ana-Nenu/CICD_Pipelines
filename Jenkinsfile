@@ -11,9 +11,9 @@ pipeline {
 
   environment {
     // 👇 Provided from Jenkins global env or job env
-    GIT_URL        = "https://example.com/your/repo.git"
+    GIT_URL        = "https://github.com/Kiran-Ana-Nenu/Springboot_App.git"
     DOCKER_HUB_URL = "https://index.docker.io/v1/"
-    DOCKER_REPO    = "yourdockerusername/yourapp"
+    DOCKER_REPO    = "kiranpayyavuala/sslexpire_application"
 
     DOCKER_CREDENTIALS_ID = "dockerhub-creds"
   }
