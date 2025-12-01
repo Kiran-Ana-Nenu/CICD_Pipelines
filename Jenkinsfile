@@ -107,25 +107,26 @@
       }
     }
 
-    stage('Trivy Scan') {
-      steps {
-        script {
-          sh(params.DEBUG_MODE ? "set -x ; true" : "true")
-          sh "trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} || true | tee trivy.txt"
+stage('Trivy Scan') {
+  steps {
+    script {
+      sh(params.DEBUG_MODE ? "set -x ; true" : "true")
+      sh "trivy image --format table --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} || true | tee trivy.txt"
 
-          def critical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
-          archiveArtifacts artifacts: 'trivy.txt', allowEmptyArchive: true
+      def critical = sh(script: "grep -E 'HIGH|CRITICAL' trivy.txt || true", returnStdout: true).trim()
+      archiveArtifacts artifacts: 'trivy.txt', allowEmptyArchive: true
 
-          if (critical && params.TRIVY_FAIL_ACTION == 'fail-build') {
-            error "❌ Trivy HIGH/CRITICAL vulnerability check failed."
-          }
-          if (critical) {
-            currentBuild.result = 'UNSTABLE'
-            echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
-          }
-        }
+      if (critical && params.TRIVY_FAIL_ACTION == 'fail-build') {
+        error "❌ Trivy HIGH/CRITICAL vulnerability check failed."
+      }
+      if (critical) {
+        currentBuild.result = 'UNSTABLE'
+        echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
       }
     }
+  }
+}
+
 
     stage('Push Image to Docker Hub') {
       steps {
