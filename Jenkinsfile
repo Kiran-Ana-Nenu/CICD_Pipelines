@@ -28,6 +28,7 @@
         echo "🧹 Cleaning workspace before build..."
         cleanWs()
       }
+    }
 
     stage('Debug Info (Optional)') {
       when { expression { return params.DEBUG_MODE } }
