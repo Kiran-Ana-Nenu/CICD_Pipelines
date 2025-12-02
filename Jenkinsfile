@@ -1,5 +1,5 @@
-// NOTE: If you use the readJSON function, ensure you have the necessary Shared Libraries
-// or plugins (like Pipeline Utility Steps) installed.
+// NOTE: If you use the readJSON function, ensure you have the necessary Plugins
+// (like Pipeline Utility Steps) installed.
 
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
@@ -60,7 +60,7 @@ pipeline {
                         selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
                     }
 
-                    // String interpolation to preview image tags
+                    // String interpolation for preview
                     def imagesPreview = selectedList.collect { img ->
                         "${env.DOCKER_REPO_PREFIX}/${img}:${previewTag}"
                     }.join("\n")
@@ -90,7 +90,7 @@ pipeline {
 
                     env.IMAGE_TAG = ref.replaceAll("/", "-")
 
-                    // NOTE: Map keys with hyphens must be wrapped in single quotes ('')
+                    // FIX: Map keys with hyphens ('worker-app', 'worker-mail') are wrapped in single quotes
                     def allImages = [
                         "web"          : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
                         'worker-app'   : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}",
@@ -138,16 +138,15 @@ pipeline {
                     def images = readJSON(text: env.IMAGES)
                     def buildTasks = [:]
                     
-                    // *** FIX for "no such file or directory": Set the path to the Dockerfile directory ***
+                    // FIX: Sets the correct path to the Dockerfile directory
                     def dockerPath = "docker" 
-                    // If the Dockerfiles are directly under 'docker/' (e.g., docker/nginx.Dockerfile)
-                    // and the build context is the workspace root (.), this path is correct.
 
                     images.each { name, image ->
                         buildTasks["Build ${name}"] = {
                             script {
                                 def dockerFile = ""
                                 
+                                // FIX: Case statements use single quotes ('') for keys with hyphens
                                 switch (name) {
                                     case "web":
                                     case 'worker-app': dockerFile = "app.Dockerfile"; break 
@@ -183,6 +182,7 @@ pipeline {
                     images.each { name, image ->
                         echo "🔍 Trivy scanning ${image}"
                         
+                        // Run Trivy and archive report
                         sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
                         archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
