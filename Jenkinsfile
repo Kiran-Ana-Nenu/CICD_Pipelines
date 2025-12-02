@@ -53,19 +53,20 @@ pipeline {
 stage('Admin Approval') {
     steps {
         script {
-            echo "📌 Job Parameters:"
-            params.each { key, value ->
-                echo "➡ ${key} = ${value}"
-            }
+            // Build multiline message with parameters
+            def paramText = params.collect { k, v -> "${k} = ${v}" }.join("\n")
 
-            def user = input message: 'Admin approval required to continue workspace cleanup',
-                             ok: 'Approve',
-                             submitter: env.APPROVERS
+            def user = input(
+                message: "Admin approval required to continue workspace cleanup.\n\n📌 Job Parameters:\n${paramText}",
+                ok: 'Approve',
+                submitter: env.APPROVERS
+            )
 
             echo "✅ Approved by: ${user}"
         }
     }
 }
+
 
 
     stage('Validate Git Ref + Generate Image Tags') {
