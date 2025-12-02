@@ -1,6 +1,5 @@
-// NOTE: @Library is typically used if you are loading shared library functions like 'readJSON'.
-// Remove this line if you are not using Jenkins Shared Libraries.
-// @Library('jenkins-pipeline-shared-libraries') _ 
+// NOTE: If you use the readJSON function, ensure you have the necessary Shared Libraries
+// or plugins (like Pipeline Utility Steps) installed.
 
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
@@ -43,7 +42,8 @@ pipeline {
             }
         }
         
-        // --- Stage for Admin Review ---
+---
+
         stage('Admin Approval') {
             steps {
                 script {
@@ -60,6 +60,7 @@ pipeline {
                         selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
                     }
 
+                    // String interpolation to preview image tags
                     def imagesPreview = selectedList.collect { img ->
                         "${env.DOCKER_REPO_PREFIX}/${img}:${previewTag}"
                     }.join("\n")
@@ -77,7 +78,8 @@ pipeline {
             }
         }
 
-        // --- Stage to calculate final image tags ---
+---
+
         stage('Validate Git Ref + Generate Image Tags') {
             steps {
                 script {
@@ -86,10 +88,9 @@ pipeline {
                         error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
                     }
 
-                    // Set IMAGE_TAG environment variable for all subsequent steps
                     env.IMAGE_TAG = ref.replaceAll("/", "-")
 
-                    // *** FIX APPLIED HERE: Map keys with hyphens are wrapped in single quotes ('') ***
+                    // NOTE: Map keys with hyphens must be wrapped in single quotes ('')
                     def allImages = [
                         "web"          : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
                         'worker-app'   : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}",
@@ -106,7 +107,6 @@ pipeline {
                         }
                     }
                     
-                    // Store the selected images map as a JSON string in an environment variable
                     env.IMAGES = JsonOutput.toJson(selectedImages)
                     
                     echo "IMAGE_TAG = ${env.IMAGE_TAG}"
@@ -116,7 +116,8 @@ pipeline {
             }
         }
         
-        // --- Stage to clone the code ---
+---
+
         stage('Checkout Code') {
             steps {
                 script {
@@ -129,20 +130,24 @@ pipeline {
             }
         }
 
-        // --- Stage to build Docker images in parallel ---
+---
+
         stage('Docker Build (Parallel)') {
             steps {
                 script {
                     def images = readJSON(text: env.IMAGES)
                     def buildTasks = [:]
-                    def dockerPath = "." // Dockerfiles assumed to be in the workspace root
+                    
+                    // *** FIX for "no such file or directory": Set the path to the Dockerfile directory ***
+                    def dockerPath = "docker" 
+                    // If the Dockerfiles are directly under 'docker/' (e.g., docker/nginx.Dockerfile)
+                    // and the build context is the workspace root (.), this path is correct.
 
                     images.each { name, image ->
                         buildTasks["Build ${name}"] = {
                             script {
                                 def dockerFile = ""
                                 
-                                // *** FIX APPLIED HERE: Case statements use single quotes ('') for keys with hyphens ***
                                 switch (name) {
                                     case "web":
                                     case 'worker-app': dockerFile = "app.Dockerfile"; break 
@@ -153,11 +158,10 @@ pipeline {
 
                                 echo "🔨 Building ${name} -> ${image} using ${dockerPath}/${dockerFile}"
                                 
-                                // Groovy variables are interpolated before passing the string to the shell
                                 sh """
                                     docker build \\
                                     ${params.USE_CACHE ? "" : "--no-cache"} \\
-                                    -f ${dockerPath}/${dockerFile} \\
+                                    -f ${dockerPath}/${dockerFile} \\ 
                                     --build-arg APP_ROLE=${name} \\
                                     --build-arg APP_VERSION=${env.IMAGE_TAG} \\
                                     -t ${image} .
@@ -170,7 +174,8 @@ pipeline {
             }
         }
 
-        // --- Stage for security scanning ---
+---
+
         stage('Trivy Scan') {
             steps {
                 script {
@@ -178,14 +183,12 @@ pipeline {
                     images.each { name, image ->
                         echo "🔍 Trivy scanning ${image}"
                         
-                        // Run Trivy. Note: `|| true` prevents the step from failing immediately if Trivy exits with 1 (vulnerabilities found).
                         sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
                         archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
                         def jsonText = readFile("trivy-${name}.json")
                         def json = new JsonSlurper().parseText(jsonText)
                         def total = 0
-                        // Count total HIGH/CRITICAL vulnerabilities
                         json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
 
                         echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
@@ -202,19 +205,19 @@ pipeline {
             }
         }
         
-        // --- Stage to push images ---
+---
+
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
             steps {
                 script {
                     withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                        // Use escaped environment variables (\$PASS, \$USER) to ensure the shell handles them
+                        // Escaping credentials variables for the shell: \$PASS, \$USER
                         sh "echo \$PASS | docker login ${env.DOCKER_HUB_URL} -u \$USER --password-stdin"
 
                         def images = readJSON(text: env.IMAGES)
                         def pushTasks = [:]
                         
-                        // Push in parallel for efficiency
                         images.each { name, image ->
                             pushTasks["Push ${name}"] = {
                                 echo "📤 Pushing ${image}"
@@ -230,7 +233,8 @@ pipeline {
         }
     }
 
-    // --- Post-build actions ---
+---
+    
     post {
         always {
             echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
