@@ -39,16 +39,34 @@ pipeline {
         cleanWs()
       }
     }
-            stage('Admin Approval') {
-            steps {
-                script {
-                    def user = input message: 'Admin approval required to continue workspace cleanup',
-                                     ok: 'Approve',
-                                     submitter: env.APPROVERS
-                    echo "✅ Approved by: ${user}"
-                }
+        //     stage('Admin Approval') {
+        //     steps {
+        //         script {
+        //             def user = input message: 'Admin approval required to continue workspace cleanup',
+        //                              ok: 'Approve',
+        //                              submitter: env.APPROVERS
+        //             echo "✅ Approved by: ${user}"
+        //         }
+        //     }
+        // }
+
+stage('Admin Approval') {
+    steps {
+        script {
+            echo "📌 Job Parameters:"
+            params.each { key, value ->
+                echo "➡ ${key} = ${value}"
             }
+
+            def user = input message: 'Admin approval required to continue workspace cleanup',
+                             ok: 'Approve',
+                             submitter: env.APPROVERS
+
+            echo "✅ Approved by: ${user}"
         }
+    }
+}
+
 
     stage('Validate Git Ref + Generate Image Tags') {
       steps {
