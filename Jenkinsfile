@@ -7,8 +7,7 @@ pipeline {
   options {
     // timestamp logs for auditing
     timestamps()
-    // keep only last 10 builds' logs/artifacts if desired (optional)
-    // buildDiscarder(logRotator(numToKeepStr: '10'))
+    // buildDiscarder(logRotator(numToKeepStr: '10')) // optional
   }
 
   parameters {
@@ -32,8 +31,7 @@ pipeline {
     DOCKER_REPO_PREFIX = "xxxxxx"
     DOCKER_CREDENTIALS_ID = "dockerhub-creds"
     APPROVERS = "admin,adminuser"
-    // ensure a default IMAGES set
-    IMAGES = '[]'
+    IMAGES = '[]' // default
   }
 
   stages {
@@ -48,18 +46,17 @@ pipeline {
     stage('Admin Approval') {
       steps {
         script {
-          // build param text
+          // Build parameter message (CPS-safe)
           def paramText = params.collect { k, v -> "${k} = ${v}" }.join("\n")
 
-          // build preview tags for selected images (safe trimming & fallback)
+          // Validate GIT_REF early
           def ref = params.GIT_REF?.trim() ?: ''
           if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            // fail early to avoid unintended runs
             error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
           }
           def previewTag = ref.replaceAll("/", "-")
 
-          // CPS-safe splitting + trimming (no spread operator)
+          // CPS-safe splitting & trimming
           def selectedList = []
           if (params.BUILD_IMAGES?.trim()) {
             selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
@@ -80,12 +77,8 @@ ${imagesPreview}
 Proceed with build?
 """
 
-          // show popup with parameters + preview
-          def user = input(
-            message: msg,
-            ok: 'Approve',
-            submitter: env.APPROVERS
-          )
+          // Input popup shows parameters + preview
+          def user = input(message: msg, ok: 'Approve', submitter: env.APPROVERS)
           echo "✅ Approved by: ${user}"
         }
       }
@@ -94,7 +87,7 @@ Proceed with build?
     stage('Build Summary Dashboard') {
       steps {
         script {
-          // ANSI color codes (works if ansi-color plugin enabled; otherwise shows raw codes)
+          // Colors (will show raw codes if ansi-color plugin isn't enabled)
           def BOLD = "\u001B[1m"
           def RESET = "\u001B[0m"
           def GREEN = "\u001B[32m"
@@ -107,24 +100,25 @@ Proceed with build?
 
           def summaryRows = [
             ["🔀 Git Ref", params.GIT_REF],
-            ["🧹 Clean Before Build", params.CLEAN_BEFORE ? "${GREEN}YES${RESET}" : "${YELLOW}NO${RESET}"],
+            ["🧹 Clean Before Build", params.CLEAN_BEFORE ? "YES" : "NO"],
             ["🔍 Trivy Fail Action", params.TRIVY_FAIL_ACTION],
-            ["🩺 Debug Mode", params.DEBUG_MODE ? "${CYAN}ENABLED${RESET}" : "DISABLED"],
+            ["🩺 Debug Mode", params.DEBUG_MODE ? "ENABLED" : "DISABLED"],
             ["🐳 Use Cache", params.USE_CACHE ? "YES" : "NO"],
             ["📤 Push After Build", params.PUSH_IMAGES ? "YES" : "NO"],
             ["📦 Build Images", buildImagesDisplay]
           ]
 
-          println ""
-          println "${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-          println "${BOLD} 💎 BUILD CONFIGURATION DASHBOARD${RESET}"
-          println "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+          echo ""
+          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+          echo "${BOLD} 💎 BUILD CONFIGURATION DASHBOARD${RESET}"
+          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
+          // Use echo (CPS-safe). We avoid printf which is blocked by the sandbox.
           summaryRows.each { row ->
-            printf("%-28s : %s\n", row[0], row[1])
+            echo "${row[0]} : ${row[1]}"
           }
 
-          println "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
           def previewTag = params.GIT_REF.trim().replaceAll("/", "-")
           def repo = env.DOCKER_REPO_PREFIX
@@ -136,11 +130,11 @@ Proceed with build?
           }
 
           if (previewImages && previewImages.size() > 0) {
-            println "${BOLD}${BLUE}📦 Docker images to be built:${RESET}"
-            previewImages.each { println "   ➤ ${GREEN}${it}${RESET}" }
-            println ""
+            echo "${BLUE}📦 Docker images to be built:${RESET}"
+            previewImages.each { echo "   ➤ ${it}" }
+            echo ""
           } else {
-            println "${YELLOW}⚠ No images selected to build${RESET}\n"
+            echo "${YELLOW}⚠ No images selected to build${RESET}"
           }
         }
       }
@@ -149,11 +143,9 @@ Proceed with build?
     stage('Validate Git Ref + Generate Image Tags') {
       steps {
         script {
-          // normalize tag
           def ref = params.GIT_REF.trim()
           env.IMAGE_TAG = ref.replaceAll("/", "-")
 
-          // Define all images (keys match extendedChoice values)
           def allImages = [
             "web"         : "${env.DOCKER_REPO_PREFIX}-web:${env.IMAGE_TAG}",
             "worker-app"  : "${env.DOCKER_REPO_PREFIX}-worker-app:${env.IMAGE_TAG}",
@@ -161,7 +153,6 @@ Proceed with build?
             "nginx"       : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
           ]
 
-          // Build selected list safely (CPS-safe)
           def selected = []
           if (params.BUILD_IMAGES?.trim()) {
             selected = params.BUILD_IMAGES.split(",").collect { it.trim() }
@@ -201,7 +192,6 @@ Proceed with build?
             sh "env | sort | sed -n '1,200p' || true"
           }
 
-          // safe checkout
           checkout([$class: 'GitSCM',
                     branches: [[name: params.GIT_REF]],
                     userRemoteConfigs: [[url: env.GIT_URL]]
@@ -223,12 +213,10 @@ Proceed with build?
           def dockerPath = "docker"
 
           images.each { name, image ->
-            // capture local copies to avoid closure/CPS issues
             def imageName = name
             def imageTag = image
 
             buildTasks["Build ${imageName}"] = {
-              // use dedicated workspace subdir to avoid parallel conflicts
               dir("build-${imageName.replaceAll('[^A-Za-z0-9_-]', '_')}") {
                 script {
                   def dockerFile = ""
@@ -250,7 +238,6 @@ Proceed with build?
                   echo "🔨 Building ${imageName} -> ${imageTag} using ${dockerFile}"
                   def noCache = params.USE_CACHE ? "" : "--no-cache"
 
-                  // timeout to avoid stuck builds
                   timeout(time: 30, unit: 'MINUTES') {
                     sh """
                       docker build ${noCache} -f ${dockerPath}/${dockerFile} \
@@ -277,8 +264,8 @@ Proceed with build?
             echo "⚠ No images to scan. Skipping Trivy."
             return
           }
+
           images.each { name, image ->
-            // local copies to avoid closure issues in CPS
             def imageName = name
             def imageTag = image
 
@@ -297,7 +284,7 @@ Proceed with build?
 
             if (!jsonText?.trim()) {
               echo "⚠ No trivy JSON content for ${imageName}. Treating as 0 HIGH/CRITICAL."
-              // return from this closure iteration (safe alternative to 'continue')
+              // use return to skip this closure iteration (CPS-safe)
               return
             }
 
@@ -333,7 +320,6 @@ Proceed with build?
             sh "echo ${PASS} | docker login ${DOCKER_HUB_URL} -u ${USER} --password-stdin"
 
             images.each { name, image ->
-              // local copy for CPS safety
               def imageTag = image
               retry(2) {
                 echo "📤 Pushing ${imageTag}"
