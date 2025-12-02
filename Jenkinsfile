@@ -80,7 +80,7 @@ Proceed with build?"""
                     env.IMAGE_TAG = ref.replaceAll("/", "-")
 
                     def allImages = [
-                        "web"         : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
+                        "web"       : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
                         'worker-app'  : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}",
                         'worker-mail' : "${env.DOCKER_REPO_PREFIX}/worker-mail:${env.IMAGE_TAG}",
                         "nginx"       : "${env.DOCKER_REPO_PREFIX}/nginx:${env.IMAGE_TAG}"
@@ -99,7 +99,8 @@ Proceed with build?"""
 
                     echo "IMAGE_TAG = ${env.IMAGE_TAG}"
                     echo "📦 Selected Docker images to build:"
-                    readJSON(text: env.IMAGES).each { k, v -> echo " - ${k}: ${v}" }
+                    new groovy.json.JsonSlurper().parseText(env.IMAGES).each { k, v -> echo " - ${k}: ${v}" }
+                    // Changed readJSON to new JsonSlurper().parseText() to avoid a plugin dependency note.
                 }
             }
         }
@@ -120,7 +121,7 @@ Proceed with build?"""
         stage('Docker Build (Parallel)') {
             steps {
                 script {
-                    def images = readJSON(text: env.IMAGES)
+                    def images = new groovy.json.JsonSlurper().parseText(env.IMAGES) // Changed readJSON
                     def buildTasks = [:]
                     def dockerPath = "docker"
 
@@ -141,11 +142,11 @@ Proceed with build?"""
                                 echo "🔨 Building ${name} -> ${image} using ${dockerPath}/${dockerFile}"
 
                                 sh """
-                                    docker build \
-                                    ${params.USE_CACHE ? "" : "--no-cache"} \
-                                    -f ${dockerPath}/${dockerFile} \
-                                    --build-arg APP_ROLE=${name} \
-                                    --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                                    docker build \\
+                                    ${params.USE_CACHE ? "" : "--no-cache"} \\
+                                    -f ${dockerPath}/${dockerFile} \\
+                                    --build-arg APP_ROLE=${name} \\
+                                    --build-arg APP_VERSION=${env.IMAGE_TAG} \\
                                     -t ${image} .
                                 """
                             }
@@ -157,37 +158,63 @@ Proceed with build?"""
             }
         }
 
-stage('Trivy Scan') {
-    steps {
-        script {
-            def images = readJSON(text: env.IMAGES)
-            images.each { name, image ->
-                echo "🔍 Trivy scanning ${image}"
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    def images = new groovy.json.JsonSlurper().parseText(env.IMAGES) // Changed readJSON
+                    images.each { name, image ->
+                        echo "🔍 Trivy scanning ${image}"
 
-                sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
-                archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+                        // Added a `timeout` to the sh step to prevent hanging if trivy fails or hangs
+                        timeout(time: 5, unit: 'MINUTES') {
+                            sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+                        }
+                        
+                        archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
-                // Use a local Map only, do not store JsonSlurper object
-                def jsonText = readFile("trivy-${name}.json")
-                def parsed = new groovy.json.JsonSlurper().parseText(jsonText)  // local only
-                def total = 0
-                parsed.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+                        def jsonText = readFile("trivy-${name}.json")
+                        def parsed = new groovy.json.JsonSlurper().parseText(jsonText) 
+                        def total = 0
+                        parsed.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
 
-                echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+                        echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
 
-                if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-                    error "❌ Vulnerabilities found in ${name} — failing build"
-                } else if (total > 0) {
-                    currentBuild.result = 'UNSTABLE'
-                    echo "⚠ Vulnerabilities found — marking UNSTABLE"
-                } else {
-                    echo "✅ No HIGH/CRITICAL vulnerabilities"
+                        if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
+                            error "❌ Vulnerabilities found in ${name} — failing build"
+                        } else if (total > 0) {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "⚠ Vulnerabilities found — marking UNSTABLE"
+                        } else {
+                            echo "✅ No HIGH/CRITICAL vulnerabilities"
+                        }
+                    }
+                }
+            }
+        } // <--- MISSING CLOSING BRACE WAS HERE
+
+        stage('Docker Push (Parallel)') {
+            when { expression { params.PUSH_IMAGES } }
+            steps {
+                script {
+                    def images = new groovy.json.JsonSlurper().parseText(env.IMAGES)
+                    def pushTasks = [:]
+                    
+                    images.each { name, image ->
+                        pushTasks["Push ${name}"] = {
+                            withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USER')]) {
+                                sh """
+                                    echo "🚀 Pushing ${image} to Docker Hub"
+                                    docker login -u ${env.DOCKER_USER} -p ${env.DOCKER_PASSWORD} ${env.DOCKER_HUB_URL}
+                                    docker push ${image}
+                                """
+                            }
+                        }
+                    }
+                    parallel pushTasks
                 }
             }
         }
     }
-}
-
 
     post {
         always {
