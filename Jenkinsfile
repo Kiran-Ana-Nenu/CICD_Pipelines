@@ -88,7 +88,7 @@ stage('Docker Build (Parallel)') {
     script {
       def images = readJSON(text: env.IMAGES)
       def buildTasks = [:]
-      def dockerPath = "ssl_monitor_project/docker"
+      def dockerPath = "docker/"
 
       images.each { name, image ->
         buildTasks["Build ${name}"] = {
