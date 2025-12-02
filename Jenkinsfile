@@ -3,16 +3,12 @@ import groovy.json.JsonOutput
 
 pipeline {
     agent any
-    options {
-        // timestamp logs for auditing
-        timestamps()
-        // buildDiscarder(logRotator(numToKeepStr: '10')) // optional
-    }
     parameters {
         string(name: 'GIT_REF', defaultValue: 'release/1.8', description: 'Branch (release/*) or tag (v*)')
         booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
         choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build', 'warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
         booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
+        // MULTI-select checkbox for images
         extendedChoice(
             name: 'BUILD_IMAGES',
             type: 'PT_CHECKBOX',
@@ -28,7 +24,7 @@ pipeline {
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        IMAGES = '[]' // default
+        // IMAGES = '[]' // default
     }
     stages {
         stage('Clean Workspace (Pre-build)') {
@@ -91,121 +87,72 @@ pipeline {
       }
     }
 
-    stage('Build Summary Dashboard') {
-      steps {
-        script {
-          // Colors (will show raw codes if ansi-color plugin isn't enabled)
-          def BOLD = "\u001B[1m"
-          def RESET = "\u001B[0m"
-          def GREEN = "\u001B[32m"
-          def YELLOW = "\u001B[33m"
-          def BLUE = "\u001B[34m"
-          def MAGENTA = "\u001B[35m"
-          def CYAN = "\u001B[36m"
-
-          def buildImagesDisplay = params.BUILD_IMAGES?.replaceAll("\\s*,\\s*", ", ") ?: ''
-
-          def summaryRows = [
-            ["🔀 Git Ref", params.GIT_REF],
-            ["🧹 Clean Before Build", params.CLEAN_BEFORE ? "YES" : "NO"],
-            ["🔍 Trivy Fail Action", params.TRIVY_FAIL_ACTION],
-            ["🩺 Debug Mode", params.DEBUG_MODE ? "ENABLED" : "DISABLED"],
-            ["🐳 Use Cache", params.USE_CACHE ? "YES" : "NO"],
-            ["📤 Push After Build", params.PUSH_IMAGES ? "YES" : "NO"],
-            ["📦 Build Images", buildImagesDisplay]
-          ]
-
-          echo ""
-          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-          echo "${BOLD} 💎 BUILD CONFIGURATION DASHBOARD${RESET}"
-          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-
-          // Use echo (CPS-safe). We avoid printf which is blocked by the sandbox.
-          summaryRows.each { row ->
-            echo "${row[0]} : ${row[1]}"
+        stage('Validate Git Ref + Generate Image Tags') {
+            steps {
+                script {
+                    def ref = params.GIT_REF.trim()
+                    if (!(
+                        ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
+            error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
           }
 
-          echo "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+          env.IMAGE_TAG = ref.replaceAll("/", " - ")
 
-          def previewTag = params.GIT_REF.trim().replaceAll("/", "-")
-          def repo = env.DOCKER_REPO_PREFIX
-          def previewImages = []
-          if (params.BUILD_IMAGES?.trim()) {
-            previewImages = params.BUILD_IMAGES.split(',').collect { it.trim() }.collect { img ->
-              "${repo}-${img}:${previewTag}"
-            }
-          }
-
-          if (previewImages && previewImages.size() > 0) {
-            echo "${BLUE}📦 Docker images to be built:${RESET}"
-            previewImages.each { echo "   ➤ ${it}" }
-            echo ""
-          } else {
-            echo "${YELLOW}⚠ No images selected to build${RESET}"
-          }
-        }
-      }
-    }
-
-    stage('Validate Git Ref + Generate Image Tags') {
-      steps {
-        script {
-          def ref = params.GIT_REF.trim()
-          env.IMAGE_TAG = ref.replaceAll("/", "-")
-
+          // Define all images
           def allImages = [
-            "web"         : "${env.DOCKER_REPO_PREFIX}-web:${env.IMAGE_TAG}",
-            "worker-app"  : "${env.DOCKER_REPO_PREFIX}-worker-app:${env.IMAGE_TAG}",
-            "worker-mail" : "${env.DOCKER_REPO_PREFIX}-worker-mail:${env.IMAGE_TAG}",
-            "nginx"       : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
+            "web"        : "$ {
+                            env.DOCKER_REPO_PREFIX
+                        } - web: $ {
+                            env.IMAGE_TAG
+                        }",
+            "worker - app" : "$ {
+                            env.DOCKER_REPO_PREFIX
+                        } - worker - app: $ {
+                            env.IMAGE_TAG
+                        }",
+            "worker - mail": "$ {
+                            env.DOCKER_REPO_PREFIX
+                        } - worker - mail: $ {
+                            env.IMAGE_TAG
+                        }",
+            "nginx"      : "$ {
+                            env.DOCKER_REPO_PREFIX
+                        } - nginx: $ {
+                            env.IMAGE_TAG
+                        }"
           ]
 
-          def selected = []
-          if (params.BUILD_IMAGES?.trim()) {
-            selected = params.BUILD_IMAGES.split(",").collect { it.trim() }
-          }
-
+          // Filter based on selected images
           def selectedImages = [:]
-          selected.each { img ->
-            if (allImages.containsKey(img)) {
-              selectedImages[img] = allImages[img]
-            } else {
-              echo "⚠ Ignoring unknown image selection: ${img}"
-            }
-          }
-
-          if (!selectedImages) {
-            echo "⚠ No valid images selected — nothing to build"
+          params.BUILD_IMAGES.split(", ").each { img ->
+            if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
           }
 
           env.IMAGES = JsonOutput.toJson(selectedImages)
-          echo "IMAGE_TAG = ${env.IMAGE_TAG}"
+          echo "IMAGE_TAG = $ {
+                            env.IMAGE_TAG
+                        }"
           echo "📦 Selected Docker images to build: "
-          def parsed = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (parsed instanceof Map) {
-            parsed.each { k, v -> echo " - ${k}: ${v}" }
-          } else if (parsed instanceof List) {
-            parsed.each { echo " - ${it}" }
-          }
+          readJSON(text: env.IMAGES).each { k, v -> echo " - $ {
+                            k
+                        }: $ {
+                            v
+                        }" }
         }
       }
     }
-
     stage('Checkout Code') {
       steps {
         script {
-          if (params.DEBUG_MODE) {
-            echo "🔧 Debug mode enabled: printing environment (partial)"
-            sh "env | sort | sed -n '1,200p' || true"
-          }
-
+          sh(params.DEBUG_MODE ? "set - x; true" : "true")
           checkout([$class: 'GitSCM',
-                    branches: [[name: params.GIT_REF]],
-                    userRemoteConfigs: [[url: env.GIT_URL]]
+              branches: [[name: params.GIT_REF]],
+              userRemoteConfigs: [[url: env.GIT_URL]]
           ])
         }
       }
     }
+
 
 stage('Docker Build (Parallel)') {
   steps {
@@ -310,16 +257,16 @@ stage('Docker Build (Parallel)') {
       }
     }
   }
-  
+
   post {
     always {
       echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
     }
     success {
-      echo "🎉 SUCCESS — Selected Docker images processed"
+      echo "🎉 SUCCESS — Selected Docker images pushed successfully"
     }
     unstable {
-      echo "⚠ UNSTABLE — Issues found (e.g., Trivy)."
+      echo "⚠ UNSTABLE — Images pushed but Trivy found vulnerabilities"
     }
     failure {
       echo "❌ FAILED — see logs"
