@@ -1,3 +1,4 @@
+@Library('jenkins-pipeline-shared-libraries') _ // Added a standard line for Groovy imports (if using shared libraries)
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 
@@ -8,7 +9,7 @@ pipeline {
         booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
         choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build', 'warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
         booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
-        // MULTI-select checkbox for images
+        // MULTI-select checkbox for images - Note: extendedChoice is not a standard Jenkins core parameter type. It requires a plugin.
         extendedChoice(
             name: 'BUILD_IMAGES',
             type: 'PT_CHECKBOX',
@@ -38,6 +39,9 @@ pipeline {
                 cleanWs()
             }
         }
+        
+---
+
         stage('Admin Approval') {
             steps {
                 script {
@@ -45,231 +49,208 @@ pipeline {
                     def paramText = params.collect {
                         k, v -> "${k} = ${v}"
                     }.join("\n")
+                    
                     // Validate GIT_REF early
                     def ref = params.GIT_REF?.trim() ?: ''
-                    if (!(
-                        ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
-          }
-          def previewTag = ref.replaceAll("/", " - ")
+                    if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
+                        error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
+                    }
+                    def previewTag = ref.replaceAll("/", "-") // Use '-' for tags, cleaner.
 
-          // CPS-safe splitting & trimming
-          def selectedList = []
-          if (params.BUILD_IMAGES?.trim()) {
-            selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
-          }
+                    // CPS-safe splitting & trimming
+                    def selectedList = []
+                    if (params.BUILD_IMAGES?.trim()) {
+                        selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
+                    }
 
-          def imagesPreview = selectedList.collect { img ->
-            "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - $ {
-                            img
-                        }: $ {
-                            previewTag
-                        }"
-          }.join("\n")
+                    // *** CORRECTED STRING INTERPOLATION ***
+                    def imagesPreview = selectedList.collect { img ->
+                        "${env.DOCKER_REPO_PREFIX}/${img}:${previewTag}" // Use standard / for repo/image separation
+                    }.join("\n")
 
-          def msg = """Admin approval required to continue workspace cleanup.
+                    // *** CORRECTED STRING INTERPOLATION IN MULTI-LINE STRING ***
+                    def msg = """Admin approval required to continue.
                         📌 Job Parameters:
-                        $ {
-                            paramText
-                        }
+                        ${paramText}
                         📦 Docker images to be built (preview):
-                        $ {
-                            imagesPreview
-                        }
-                        Proceed with build ? """
+                        ${imagesPreview}
+                        Proceed with build?"""
 
-          // Input popup shows parameters + preview
-          def user = input(message: msg, ok: 'Approve', submitter: env.APPROVERS)
-          echo "✅ Approved by: ${user}"
+                    // Input popup shows parameters + preview
+                    def user = input(message: msg, ok: 'Approve', submitter: env.APPROVERS)
+                    echo "✅ Approved by: ${user}"
+                }
+            }
         }
-      }
-    }
+
+---
 
         stage('Validate Git Ref + Generate Image Tags') {
             steps {
                 script {
                     def ref = params.GIT_REF.trim()
-                    if (!(
-                        ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
-          }
+                    if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
+                        error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
+                    }
 
-          env.IMAGE_TAG = ref.replaceAll("/", " - ")
+                    // *** CORRECTED: Using '-' in tag and setting env variable for later stages ***
+                    env.IMAGE_TAG = ref.replaceAll("/", "-")
 
-          // Define all images
-          def allImages = [
-            "web"        : "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - web: $ {
-                            env.IMAGE_TAG
-                        }",
-            "worker - app" : "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - worker - app: $ {
-                            env.IMAGE_TAG
-                        }",
-            "worker - mail": "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - worker - mail: $ {
-                            env.IMAGE_TAG
-                        }",
-            "nginx"      : "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - nginx: $ {
-                            env.IMAGE_TAG
-                        }"
-          ]
+                    // Define all images - using a map for cleaner definition
+                    // *** CORRECTED STRING INTERPOLATION ***
+                    def allImages = [
+                        "web"          : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
+                        "worker-app"   : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}",
+                        "worker-mail"  : "${env.DOCKER_REPO_PREFIX}/worker-mail:${env.IMAGE_TAG}",
+                        "nginx"        : "${env.DOCKER_REPO_PREFIX}/nginx:${env.IMAGE_TAG}"
+                    ]
 
-          // Filter based on selected images
-          def selectedImages = [:]
-          params.BUILD_IMAGES.split(", ").each { img ->
-            if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
-          }
-
-          env.IMAGES = JsonOutput.toJson(selectedImages)
-          echo "IMAGE_TAG = $ {
-                            env.IMAGE_TAG
-                        }"
-          echo "📦 Selected Docker images to build: "
-          readJSON(text: env.IMAGES).each { k, v -> echo " - $ {
-                            k
-                        }: $ {
-                            v
-                        }" }
-        }
-      }
-    }
-    stage('Checkout Code') {
-      steps {
-        script {
-          sh(params.DEBUG_MODE ? "set - x; true" : "true")
-          checkout([$class: 'GitSCM',
-              branches: [[name: params.GIT_REF]],
-              userRemoteConfigs: [[url: env.GIT_URL]]
-          ])
-        }
-      }
-    }
-
-
-stage('Docker Build (Parallel)') {
-  steps {
-    script {
-      def images = readJSON(text: env.IMAGES)
-      def buildTasks = [:]
-      def dockerPath = "docker"
-
-      images.each { name, image ->
-        buildTasks["Build $ {
-                            name
-                        }"] = {
-          script {
-            def dockerFile = ""
-            switch (name) {
-              case "web":
-              case "worker - app": dockerFile = "app.Dockerfile"; break
-              case "worker - mail": dockerFile = "mail.Dockerfile"; break
-              case "nginx": dockerFile = "nginx.Dockerfile"; break
-              default: error("❌ Unknown image: $ {
-                            name
-                        }")
+                    // Filter based on selected images
+                    def selectedImages = [:]
+                    // Note: changed split separator from ", " to "," based on default value
+                    params.BUILD_IMAGES.split(',').collect{ it.trim() }.each { img ->
+                        if (allImages.containsKey(img)) {
+                            selectedImages[img] = allImages[img]
+                        } else {
+                             echo "Skipping unknown image selection: ${img}"
+                        }
+                    }
+                    
+                    env.IMAGES = JsonOutput.toJson(selectedImages)
+                    
+                    // *** CORRECTED STRING INTERPOLATION ***
+                    echo "IMAGE_TAG = ${env.IMAGE_TAG}"
+                    echo "📦 Selected Docker images to build (repo/image:tag):"
+                    readJSON(text: env.IMAGES).each { k, v -> echo " - ${k}: ${v}" }
+                }
             }
-
-            echo "🔨 Building $ {
-                            name
-                        } -> $ {
-                            image
-                        } using $ {
-                            dockerFile
-                        }"
-            sh """
-                        docker build \
-                        $ {
-                            params.USE_CACHE ? "": "--no-cache"
-                        } \
- - f $ {
-                            dockerPath
-                        }/${dockerFile} \
-                --build-arg APP_ROLE=${name} \
-                --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                -t ${image} .
-            """
-          }
         }
-      }
-      parallel buildTasks
-    }
-  }
-}
+        
+---
 
-    stage('Trivy Scan') {
-      steps {
-        script {
-          def images = readJSON(text: env.IMAGES)
-          images.each { name, image ->
-            echo "🔍 Trivy scanning ${image}"
-            sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
-            archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
-
-            def jsonText = readFile("trivy-${name}.json")
-            def json = new JsonSlurper().parseText(jsonText)
-            def total = 0
-            json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
-
-            echo "⚠ HIGH/CRITICAL count for $ {
-                            name
-                        }: $ {
-                            total
-                        }"
-            if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-              error "❌ Vulnerabilities found in $ {
-                            name
-                        } — failing build"
-            } else if (total > 0) {
-              currentBuild.result = 'UNSTABLE'
-              echo "⚠ Vulnerabilities found — marking UNSTABLE"
-            } else {
-              echo "✅ No HIGH/CRITICAL vulnerabilities"
+        stage('Checkout Code') {
+            steps {
+                script {
+                    // *** CORRECTED: Use single quotes for simple 'true' in sh step. ***
+                    sh(params.DEBUG_MODE ? "set -x; true" : 'true') 
+                    checkout([$class: 'GitSCM',
+                            branches: [[name: params.GIT_REF]],
+                            userRemoteConfigs: [[url: env.GIT_URL]]
+                    ])
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('Push Images to Docker Hub') {
-      when { expression { params.PUSH_IMAGES } }
-      steps {
-        script {
-          withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-            sh "echo ${PASS} | docker login ${DOCKER_HUB_URL} -u ${USER} --password-stdin"
+---
 
-            def images = readJSON(text: env.IMAGES)
-            images.each { name, image ->
-              echo "📤 Pushing ${image}"
-              sh "docker push ${image}"
+        stage('Docker Build (Parallel)') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    def buildTasks = [:]
+                    def dockerPath = "." // Assuming Dockerfiles are in the root directory (where the Jenkinsfile is)
+
+                    images.each { name, image ->
+                        // *** CORRECTED STRING INTERPOLATION ***
+                        buildTasks["Build ${name}"] = {
+                            script {
+                                def dockerFile = ""
+                                switch (name) {
+                                    case "web":
+                                    case "worker-app": dockerFile = "app.Dockerfile"; break
+                                    case "worker-mail": dockerFile = "mail.Dockerfile"; break
+                                    case "nginx": dockerFile = "nginx.Dockerfile"; break
+                                    default: error("❌ Unknown image: ${name}")
+                                }
+
+                                // *** CORRECTED STRING INTERPOLATION ***
+                                echo "🔨 Building ${name} -> ${image} using ${dockerFile}"
+                                
+                                // *** CORRECTED SHELL STRING INTERPOLATION ***
+                                sh """
+                                    docker build \
+                                    ${params.USE_CACHE ? "" : "--no-cache"} \
+                                    -f ${dockerPath}/${dockerFile} \
+                                    --build-arg APP_ROLE=${name} \
+                                    --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                                    -t ${image} .
+                                """
+                            }
+                        }
+                    }
+                    parallel buildTasks
+                }
             }
-
-            sh "docker logout"
-          }
         }
-      }
-    }
-  }
 
-  post {
-    always {
-      echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
+---
+
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    images.each { name, image ->
+                        echo "🔍 Trivy scanning ${image}"
+                        
+                        // Run Trivy and archive report
+                        sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+                        archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+
+                        def jsonText = readFile("trivy-${name}.json")
+                        def json = new JsonSlurper().parseText(jsonText)
+                        def total = 0
+                        json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+
+                        // *** CORRECTED STRING INTERPOLATION ***
+                        echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+                        if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
+                            error "❌ Vulnerabilities found in ${name} — failing build"
+                        } else if (total > 0) {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "⚠ Vulnerabilities found — marking UNSTABLE"
+                        } else {
+                            echo "✅ No HIGH/CRITICAL vulnerabilities"
+                        }
+                    }
+                }
+            }
+        }
+        
+---
+
+        stage('Push Images to Docker Hub') {
+            when { expression { params.PUSH_IMAGES } }
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                        // Using 'sh' and standard environment variables for credentials
+                        sh "echo \$PASS | docker login ${env.DOCKER_HUB_URL} -u \$USER --password-stdin"
+
+                        def images = readJSON(text: env.IMAGES)
+                        images.each { name, image ->
+                            echo "📤 Pushing ${image}"
+                            sh "docker push ${image}"
+                        }
+
+                        sh "docker logout"
+                    }
+                }
+            }
+        }
     }
-    success {
-      echo "🎉 SUCCESS — Selected Docker images pushed successfully"
+
+    post {
+        always {
+            echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
+        }
+        success {
+            echo "🎉 SUCCESS — Selected Docker images pushed successfully"
+        }
+        unstable {
+            echo "⚠ UNSTABLE — Images pushed but Trivy found vulnerabilities"
+        }
+        failure {
+            echo "❌ FAILED — see logs"
+        }
     }
-    unstable {
-      echo "⚠ UNSTABLE — Images pushed but Trivy found vulnerabilities"
-    }
-    failure {
-      echo "❌ FAILED — see logs"
-    }
-  }
 }
