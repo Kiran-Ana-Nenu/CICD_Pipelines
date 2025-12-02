@@ -26,9 +26,9 @@ pipeline {
   }
 
   environment {
-    GIT_URL = "xxxxxxxxx"
+    GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
     DOCKER_HUB_URL = "https://index.docker.io/v1/"
-    DOCKER_REPO_PREFIX = "xxxxxx"
+    DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
     DOCKER_CREDENTIALS_ID = "dockerhub-creds"
     APPROVERS = "admin,adminuser"
     IMAGES = '[]' // default
