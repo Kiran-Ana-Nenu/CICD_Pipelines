@@ -54,14 +54,15 @@ pipeline {
           // build preview tags for selected images (safe trimming & fallback)
           def ref = params.GIT_REF?.trim() ?: ''
           if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            // Do not fail here so approver can see invalid ref? We'll error to avoid unwanted runs.
+            // fail early to avoid unintended runs
             error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
           }
           def previewTag = ref.replaceAll("/", "-")
 
+          // CPS-safe splitting + trimming (no spread operator)
           def selectedList = []
           if (params.BUILD_IMAGES?.trim()) {
-            selectedList = params.BUILD_IMAGES.split(',')*.trim()
+            selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
           }
 
           def imagesPreview = selectedList.collect { img ->
@@ -129,12 +130,12 @@ Proceed with build?
           def repo = env.DOCKER_REPO_PREFIX
           def previewImages = []
           if (params.BUILD_IMAGES?.trim()) {
-            previewImages = params.BUILD_IMAGES.split(',')*.trim().collect { img ->
+            previewImages = params.BUILD_IMAGES.split(',').collect { it.trim() }.collect { img ->
               "${repo}-${img}:${previewTag}"
             }
           }
 
-          if (previewImages) {
+          if (previewImages && previewImages.size() > 0) {
             println "${BOLD}${BLUE}📦 Docker images to be built:${RESET}"
             previewImages.each { println "   ➤ ${GREEN}${it}${RESET}" }
             println ""
@@ -160,10 +161,10 @@ Proceed with build?
             "nginx"       : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
           ]
 
-          // Build selected list safely
+          // Build selected list safely (CPS-safe)
           def selected = []
           if (params.BUILD_IMAGES?.trim()) {
-            selected = params.BUILD_IMAGES.split(",")*.trim()
+            selected = params.BUILD_IMAGES.split(",").collect { it.trim() }
           }
 
           def selectedImages = [:]
@@ -182,8 +183,12 @@ Proceed with build?
           env.IMAGES = JsonOutput.toJson(selectedImages)
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
           echo "📦 Selected Docker images to build: "
-          def parsed = new JsonSlurper().parseText(env.IMAGES ?: '[]')
-          parsed.each { k, v -> echo " - ${k}: ${v}" }
+          def parsed = new JsonSlurper().parseText(env.IMAGES ?: '{}')
+          if (parsed instanceof Map) {
+            parsed.each { k, v -> echo " - ${k}: ${v}" }
+          } else if (parsed instanceof List) {
+            parsed.each { echo " - ${it}" }
+          }
         }
       }
     }
@@ -209,7 +214,7 @@ Proceed with build?
       steps {
         script {
           def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images) {
+          if (!images || images.size() == 0) {
             echo "⚠ No images to build. Skipping Docker Build stage."
             return
           }
@@ -218,12 +223,16 @@ Proceed with build?
           def dockerPath = "docker"
 
           images.each { name, image ->
-            buildTasks["Build ${name}"] = {
+            // capture local copies to avoid closure/CPS issues
+            def imageName = name
+            def imageTag = image
+
+            buildTasks["Build ${imageName}"] = {
               // use dedicated workspace subdir to avoid parallel conflicts
-              dir("build-${name.replaceAll('[^A-Za-z0-9_-]', '_')}") {
+              dir("build-${imageName.replaceAll('[^A-Za-z0-9_-]', '_')}") {
                 script {
                   def dockerFile = ""
-                  switch (name) {
+                  switch (imageName) {
                     case "web":
                     case "worker-app":
                       dockerFile = "app.Dockerfile"
@@ -235,19 +244,19 @@ Proceed with build?
                       dockerFile = "nginx.Dockerfile"
                       break
                     default:
-                      error("❌ Unknown image: ${name}")
+                      error("❌ Unknown image: ${imageName}")
                   }
 
-                  echo "🔨 Building ${name} -> ${image} using ${dockerFile}"
+                  echo "🔨 Building ${imageName} -> ${imageTag} using ${dockerFile}"
                   def noCache = params.USE_CACHE ? "" : "--no-cache"
 
                   // timeout to avoid stuck builds
                   timeout(time: 30, unit: 'MINUTES') {
                     sh """
                       docker build ${noCache} -f ${dockerPath}/${dockerFile} \
-                        --build-arg APP_ROLE=${name} \
+                        --build-arg APP_ROLE=${imageName} \
                         --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                        -t ${image} .
+                        -t ${imageTag} .
                     """
                   }
                 }
@@ -264,36 +273,41 @@ Proceed with build?
       steps {
         script {
           def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images) {
+          if (!images || images.size() == 0) {
             echo "⚠ No images to scan. Skipping Trivy."
             return
           }
           images.each { name, image ->
-            echo "🔍 Trivy scanning ${image}"
-            def outputFile = "trivy-${name}.json"
-            sh "trivy image --format json --severity HIGH,CRITICAL ${image} -o ${outputFile} || true"
+            // local copies to avoid closure issues in CPS
+            def imageName = name
+            def imageTag = image
+
+            echo "🔍 Trivy scanning ${imageTag}"
+            def outputFile = "trivy-${imageName}.json"
+            sh "trivy image --format json --severity HIGH,CRITICAL ${imageTag} -o ${outputFile} || true"
             archiveArtifacts artifacts: outputFile, allowEmptyArchive: true
 
             def jsonText = ''
             try {
               jsonText = readFile(outputFile)
             } catch (err) {
-              echo "⚠ Trivy output for ${name} not found: ${err}"
+              echo "⚠ Trivy output for ${imageName} not found: ${err}"
               jsonText = ''
             }
 
             if (!jsonText?.trim()) {
-              echo "⚠ No trivy JSON content for ${name}. Treating as 0 HIGH/CRITICAL."
-              continue
+              echo "⚠ No trivy JSON content for ${imageName}. Treating as 0 HIGH/CRITICAL."
+              // return from this closure iteration (safe alternative to 'continue')
+              return
             }
 
             def json = new JsonSlurper().parseText(jsonText)
             def total = 0
             json.Results?.each { r -> total += (r?.Vulnerabilities?.size() ?: 0) }
 
-            echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+            echo "⚠ HIGH/CRITICAL count for ${imageName}: ${total}"
             if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-              error "❌ Vulnerabilities found in ${name} — failing build"
+              error "❌ Vulnerabilities found in ${imageName} — failing build"
             } else if (total > 0) {
               currentBuild.result = 'UNSTABLE'
               echo "⚠ Vulnerabilities found — marking UNSTABLE"
@@ -310,7 +324,7 @@ Proceed with build?
       steps {
         script {
           def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images) {
+          if (!images || images.size() == 0) {
             echo "⚠ No images to push. Skipping Push stage."
             return
           }
@@ -319,9 +333,11 @@ Proceed with build?
             sh "echo ${PASS} | docker login ${DOCKER_HUB_URL} -u ${USER} --password-stdin"
 
             images.each { name, image ->
+              // local copy for CPS safety
+              def imageTag = image
               retry(2) {
-                echo "📤 Pushing ${image}"
-                sh "docker push ${image}"
+                echo "📤 Pushing ${imageTag}"
+                sh "docker push ${imageTag}"
               }
             }
 
