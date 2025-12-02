@@ -58,17 +58,6 @@ pipeline {
           if (params.BUILD_IMAGES?.trim()) {
             selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
           }
-
-          def imagesPreview = selectedList.collect { img ->
-            "$ {
-                            env.DOCKER_REPO_PREFIX
-                        } - $ {
-                            img
-                        }: $ {
-                            previewTag
-                        }"
-          }.join("\n")
-
           def msg = """Admin approval required to continue workspace cleanup.
                         Proceed with build ? """
 
