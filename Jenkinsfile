@@ -60,7 +60,6 @@ pipeline {
                         selectedList = params.BUILD_IMAGES.split(',').collect { it.trim() }
                     }
 
-                    // String interpolation for preview
                     def imagesPreview = selectedList.collect { img ->
                         "${env.DOCKER_REPO_PREFIX}/${img}:${previewTag}"
                     }.join("\n")
@@ -90,11 +89,11 @@ pipeline {
 
                     env.IMAGE_TAG = ref.replaceAll("/", "-")
 
-                    // FIX: Map keys with hyphens ('worker-app', 'worker-mail') are wrapped in single quotes
+                    // CORRECT: All keys with hyphens are wrapped in single quotes
                     def allImages = [
                         "web"          : "${env.DOCKER_REPO_PREFIX}/web:${env.IMAGE_TAG}",
-                        'worker-app'   : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}",
-                        'worker-mail'  : "${env.DOCKER_REPO_PREFIX}/worker-mail:${env.IMAGE_TAG}",
+                        'worker-app'   : "${env.DOCKER_REPO_PREFIX}/worker-app:${env.IMAGE_TAG}", // Quoted
+                        'worker-mail'  : "${env.DOCKER_REPO_PREFIX}/worker-mail:${env.IMAGE_TAG}", // Quoted
                         "nginx"        : "${env.DOCKER_REPO_PREFIX}/nginx:${env.IMAGE_TAG}"
                     ]
 
@@ -138,7 +137,7 @@ pipeline {
                     def images = readJSON(text: env.IMAGES)
                     def buildTasks = [:]
                     
-                    // FIX: Sets the correct path to the Dockerfile directory
+                    // CORRECT: Path to the Dockerfile directory
                     def dockerPath = "docker" 
 
                     images.each { name, image ->
@@ -146,7 +145,7 @@ pipeline {
                             script {
                                 def dockerFile = ""
                                 
-                                // FIX: Case statements use single quotes ('') for keys with hyphens
+                                // CORRECT: Case statements use quotes for keys with hyphens
                                 switch (name) {
                                     case "web":
                                     case 'worker-app': dockerFile = "app.Dockerfile"; break 
@@ -182,7 +181,6 @@ pipeline {
                     images.each { name, image ->
                         echo "🔍 Trivy scanning ${image}"
                         
-                        // Run Trivy and archive report
                         sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
                         archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
