@@ -27,6 +27,7 @@ pipeline {
     DOCKER_HUB_URL        = "https://index.docker.io/v1/"
     DOCKER_REPO_PREFIX    = "kiranpayyavuala/sslexpire_application"
     DOCKER_CREDENTIALS_ID = "dockerhub-creds"
+    APPROVERS             = "admin,adminuser"
   }
 
   stages {
@@ -38,6 +39,16 @@ pipeline {
         cleanWs()
       }
     }
+            stage('Admin Approval') {
+            steps {
+                script {
+                    def user = input message: 'Admin approval required to continue workspace cleanup',
+                                     ok: 'Approve',
+                                     submitter: env.APPROVERS
+                    echo "✅ Approved by: ${user}"
+                }
+            }
+        }
 
     stage('Validate Git Ref + Generate Image Tags') {
       steps {
