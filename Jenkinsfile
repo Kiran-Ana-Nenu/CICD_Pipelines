@@ -157,35 +157,37 @@ Proceed with build?"""
             }
         }
 
-        stage('Trivy Scan') {
-            steps {
-                script {
-                    def images = readJSON(text: env.IMAGES)
-                    images.each { name, image ->
-                        echo "🔍 Trivy scanning ${image}"
+stage('Trivy Scan') {
+    steps {
+        script {
+            def images = readJSON(text: env.IMAGES)
+            images.each { name, image ->
+                echo "🔍 Trivy scanning ${image}"
 
-                        sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
-                        archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+                sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+                archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
-                        def result = new JsonSlurper().parseText(readFile("trivy-${name}.json"))
-                        def total = 0
-                        result.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+                // Use a local Map only, do not store JsonSlurper object
+                def jsonText = readFile("trivy-${name}.json")
+                def parsed = new groovy.json.JsonSlurper().parseText(jsonText)  // local only
+                def total = 0
+                parsed.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
 
-                        echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+                echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
 
-                        if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-                            error "❌ Vulnerabilities found in ${name} — failing build"
-                        } else if (total > 0) {
-                            currentBuild.result = 'UNSTABLE'
-                            echo "⚠ Vulnerabilities found — marking UNSTABLE"
-                        } else {
-                            echo "✅ No HIGH/CRITICAL vulnerabilities"
-                        }
-                    }
+                if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
+                    error "❌ Vulnerabilities found in ${name} — failing build"
+                } else if (total > 0) {
+                    currentBuild.result = 'UNSTABLE'
+                    echo "⚠ Vulnerabilities found — marking UNSTABLE"
+                } else {
+                    echo "✅ No HIGH/CRITICAL vulnerabilities"
                 }
             }
         }
     }
+}
+
 
     post {
         always {
