@@ -2,59 +2,60 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 
 pipeline {
-  agent any
-
-  options {
-    // timestamp logs for auditing
-    timestamps()
-    // buildDiscarder(logRotator(numToKeepStr: '10')) // optional
-  }
-
-  parameters {
-    string(name: 'GIT_REF', defaultValue: 'release/1.8', description: 'Branch (release/*) or tag (v*)')
-    booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
-    choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build', 'warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
-    booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
-    extendedChoice(
-      name: 'BUILD_IMAGES',
-      type: 'PT_CHECKBOX',
-      value: 'web,worker-app,worker-mail,nginx',
-      description: 'Select which images to build'
-    )
-    booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
-    booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
-  }
-
-  environment {
-    GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
-    DOCKER_HUB_URL = "https://index.docker.io/v1/"
-    DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
-    DOCKER_CREDENTIALS_ID = "dockerhub-creds"
-    APPROVERS = "admin,adminuser"
-    IMAGES = '[]' // default
-  }
-
-  stages {
-    stage('Clean Workspace (Pre-build)') {
-      when { expression { params.CLEAN_BEFORE } }
-      steps {
-        echo "🧹 Cleaning workspace..."
-        cleanWs()
-      }
+    agent any
+    options {
+        // timestamp logs for auditing
+        timestamps()
+        // buildDiscarder(logRotator(numToKeepStr: '10')) // optional
     }
-
-    stage('Admin Approval') {
-      steps {
-        script {
-          // Build parameter message (CPS-safe)
-          def paramText = params.collect { k, v -> "${k} = ${v}" }.join("\n")
-
-          // Validate GIT_REF early
-          def ref = params.GIT_REF?.trim() ?: ''
-          if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
+    parameters {
+        string(name: 'GIT_REF', defaultValue: 'release/1.8', description: 'Branch (release/*) or tag (v*)')
+        booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
+        choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build', 'warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
+        booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
+        extendedChoice(
+            name: 'BUILD_IMAGES',
+            type: 'PT_CHECKBOX',
+            value: 'web,worker-app,worker-mail,nginx',
+            description: 'Select which images to build'
+        )
+        booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
+        booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
+    }
+    environment {
+        GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
+        DOCKER_HUB_URL = "https://index.docker.io/v1/"
+        DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
+        DOCKER_CREDENTIALS_ID = "dockerhub-creds"
+        APPROVERS = "admin,adminuser"
+        IMAGES = '[]' // default
+    }
+    stages {
+        stage('Clean Workspace (Pre-build)') {
+            when {
+                expression {
+                    params.CLEAN_BEFORE
+                }
+            }
+            steps {
+                echo "🧹 Cleaning workspace..."
+                cleanWs()
+            }
+        }
+        stage('Admin Approval') {
+            steps {
+                script {
+                    // Build parameter message (CPS-safe)
+                    def paramText = params.collect {
+                        k, v -> "${k} = ${v}"
+                    }.join("\n")
+                    // Validate GIT_REF early
+                    def ref = params.GIT_REF?.trim() ?: ''
+                    if (!(
+                        ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
             error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
           }
-          def previewTag = ref.replaceAll("/", "-")
+          def previewTag = ref.replaceAll("/", " - ")
 
           // CPS-safe splitting & trimming
           def selectedList = []
@@ -63,19 +64,25 @@ pipeline {
           }
 
           def imagesPreview = selectedList.collect { img ->
-            "${env.DOCKER_REPO_PREFIX}-${img}:${previewTag}"
+            "$ {
+                            env.DOCKER_REPO_PREFIX
+                        } - $ {
+                            img
+                        }: $ {
+                            previewTag
+                        }"
           }.join("\n")
 
           def msg = """Admin approval required to continue workspace cleanup.
-
-📌 Job Parameters:
-${paramText}
-
-📦 Docker images to be built (preview):
-${imagesPreview}
-
-Proceed with build?
-"""
+                        📌 Job Parameters:
+                        $ {
+                            paramText
+                        }
+                        📦 Docker images to be built (preview):
+                        $ {
+                            imagesPreview
+                        }
+                        Proceed with build ? """
 
           // Input popup shows parameters + preview
           def user = input(message: msg, ok: 'Approve', submitter: env.APPROVERS)
@@ -200,101 +207,79 @@ Proceed with build?
       }
     }
 
-    stage('Docker Build (Parallel)') {
-      steps {
-        script {
-          def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images || images.size() == 0) {
-            echo "⚠ No images to build. Skipping Docker Build stage."
-            return
-          }
+stage('Docker Build (Parallel)') {
+  steps {
+    script {
+      def images = readJSON(text: env.IMAGES)
+      def buildTasks = [:]
+      def dockerPath = "docker"
 
-          def buildTasks = [:]
-          def dockerPath = "docker"
-
-          images.each { name, image ->
-            def imageName = name
-            def imageTag = image
-
-            buildTasks["Build ${imageName}"] = {
-              dir("build-${imageName.replaceAll('[^A-Za-z0-9_-]', '_')}") {
-                script {
-                  def dockerFile = ""
-                  switch (imageName) {
-                    case "web":
-                    case "worker-app":
-                      dockerFile = "app.Dockerfile"
-                      break
-                    case "worker-mail":
-                      dockerFile = "mail.Dockerfile"
-                      break
-                    case "nginx":
-                      dockerFile = "nginx.Dockerfile"
-                      break
-                    default:
-                      error("❌ Unknown image: ${imageName}")
-                  }
-
-                  echo "🔨 Building ${imageName} -> ${imageTag} using ${dockerFile}"
-                  def noCache = params.USE_CACHE ? "" : "--no-cache"
-
-                  timeout(time: 30, unit: 'MINUTES') {
-                    sh """
-                      docker build ${noCache} -f ${dockerPath}/${dockerFile} \
-                        --build-arg APP_ROLE=${imageName} \
-                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                        -t ${imageTag} .
-                    """
-                  }
-                }
-              }
+      images.each { name, image ->
+        buildTasks["Build $ {
+                            name
+                        }"] = {
+          script {
+            def dockerFile = ""
+            switch (name) {
+              case "web":
+              case "worker - app": dockerFile = "app.Dockerfile"; break
+              case "worker - mail": dockerFile = "mail.Dockerfile"; break
+              case "nginx": dockerFile = "nginx.Dockerfile"; break
+              default: error("❌ Unknown image: $ {
+                            name
+                        }")
             }
-          }
 
-          parallel buildTasks
+            echo "🔨 Building $ {
+                            name
+                        } -> $ {
+                            image
+                        } using $ {
+                            dockerFile
+                        }"
+            sh """
+                        docker build \
+                        $ {
+                            params.USE_CACHE ? "": "--no-cache"
+                        } \
+ - f $ {
+                            dockerPath
+                        }/${dockerFile} \
+                --build-arg APP_ROLE=${name} \
+                --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                -t ${image} .
+            """
+          }
         }
       }
+      parallel buildTasks
     }
+  }
+}
 
     stage('Trivy Scan') {
       steps {
         script {
-          def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images || images.size() == 0) {
-            echo "⚠ No images to scan. Skipping Trivy."
-            return
-          }
-
+          def images = readJSON(text: env.IMAGES)
           images.each { name, image ->
-            def imageName = name
-            def imageTag = image
+            echo "🔍 Trivy scanning ${image}"
+            sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+            archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
-            echo "🔍 Trivy scanning ${imageTag}"
-            def outputFile = "trivy-${imageName}.json"
-            sh "trivy image --format json --severity HIGH,CRITICAL ${imageTag} -o ${outputFile} || true"
-            archiveArtifacts artifacts: outputFile, allowEmptyArchive: true
-
-            def jsonText = ''
-            try {
-              jsonText = readFile(outputFile)
-            } catch (err) {
-              echo "⚠ Trivy output for ${imageName} not found: ${err}"
-              jsonText = ''
-            }
-
-            if (!jsonText?.trim()) {
-              echo "⚠ No trivy JSON content for ${imageName}. Treating as 0 HIGH/CRITICAL."
-              // use return to skip this closure iteration (CPS-safe)
-              return
-            }
-
+            def jsonText = readFile("trivy-${name}.json")
             def json = new JsonSlurper().parseText(jsonText)
             def total = 0
-            json.Results?.each { r -> total += (r?.Vulnerabilities?.size() ?: 0) }
+            json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
 
-            echo "⚠ HIGH/CRITICAL count for ${imageName}: ${total}"
+            echo "⚠ HIGH/CRITICAL count for $ {
+                            name
+                        }: $ {
+                            total
+                        }"
             if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-              error "❌ Vulnerabilities found in ${imageName} — failing build"
+              error "❌ Vulnerabilities found in $ {
+                            name
+                        } — failing build"
             } else if (total > 0) {
               currentBuild.result = 'UNSTABLE'
               echo "⚠ Vulnerabilities found — marking UNSTABLE"
@@ -310,30 +295,22 @@ Proceed with build?
       when { expression { params.PUSH_IMAGES } }
       steps {
         script {
-          def images = new JsonSlurper().parseText(env.IMAGES ?: '{}')
-          if (!images || images.size() == 0) {
-            echo "⚠ No images to push. Skipping Push stage."
-            return
-          }
-
           withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
             sh "echo ${PASS} | docker login ${DOCKER_HUB_URL} -u ${USER} --password-stdin"
 
+            def images = readJSON(text: env.IMAGES)
             images.each { name, image ->
-              def imageTag = image
-              retry(2) {
-                echo "📤 Pushing ${imageTag}"
-                sh "docker push ${imageTag}"
-              }
+              echo "📤 Pushing ${image}"
+              sh "docker push ${image}"
             }
 
-            sh "docker logout || true"
+            sh "docker logout"
           }
         }
       }
     }
   }
-
+  
   post {
     always {
       echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
