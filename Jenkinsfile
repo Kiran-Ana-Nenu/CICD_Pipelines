@@ -70,14 +70,6 @@ pipeline {
           }.join("\n")
 
           def msg = """Admin approval required to continue workspace cleanup.
-                        📌 Job Parameters:
-                        $ {
-                            paramText
-                        }
-                        📦 Docker images to be built (preview):
-                        $ {
-                            imagesPreview
-                        }
                         Proceed with build ? """
 
           // Input popup shows parameters + preview
