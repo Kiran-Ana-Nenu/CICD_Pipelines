@@ -94,50 +94,6 @@ pipeline {
       }
     }
 
-// stage('Docker Build (Parallel)') {
-//   steps {
-//     script {
-//       def images = readJSON(text: env.IMAGES)
-//       def buildTasks = [:]
-//       def dockerPath = "docker/"
-
-//       images.each { name, image ->
-//         buildTasks["Build ${name}"] = {
-//           script {
-//             def dockerFile = ""
-//             // Assign Dockerfile based on image name
-//             switch (name) {
-//               case "web":
-//               case "worker-app":
-//                 dockerFile = "app.Dockerfile"
-//                 break
-//               case "worker-mail":
-//                 dockerFile = "mail.Dockerfile"
-//                 break
-//               case "nginx":
-//                 dockerFile = "nginx.Dockerfile"
-//                 break
-//               default:
-//                 error("❌ Unknown image: ${name}")
-//             }
-
-//             echo "🔨 Building ${name} -> ${image} using ${dockerFile}"
-//             sh """
-//               docker build \
-//                 ${params.USE_CACHE ? "" : "--no-cache"} \
-//                 -f ${dockerPath}/${dockerFile} \
-//                 --build-arg APP_ROLE=${name} \
-//                 --build-arg APP_VERSION=${env.IMAGE_TAG} \
-//                 -t ${image} ${dockerPath}
-//             """
-//           }
-//         }
-//       }
-
-//       parallel buildTasks
-//     }
-//   }
-// }
 
 stage('Docker Build (Parallel)') {
   steps {
