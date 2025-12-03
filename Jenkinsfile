@@ -1,3 +1,79 @@
+/*
+================================================================================
+📌 PIPELINE DESCRIPTION — End-to-End Docker Build & Security Scan Workflow
+--------------------------------------------------------------------------------
+Descreption : This Jenkins pipeline automates Docker image builds for multiple services, performs vulnerability scanning, and optionally pushes images to Docker Hub.
+              The pipeline is parameter-driven and suitable for controlled production deployments.
+Author    : Kiran
+Version   : python image build 1.3
+Date      : Dec 3rd, 2025
+Ticket No : DevOps-4532
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏗 HIGH-LEVEL FLOW
+1️⃣ Receive input parameters from user (Git ref, images to build, cache option, etc.)
+2️⃣ Optional workspace cleanup before build
+3️⃣ Manual approval gate for authorized users before performing any build action
+4️⃣ Validate the Git reference and dynamically generate Docker image tags
+5️⃣ Checkout source code from Git repository
+6️⃣ Build Docker images for selected services:
+      • Parallel or Serial execution based on `Parallelbuild` parameter
+7️⃣ Scan each image with Trivy and determine build status (FAIL / UNSTABLE / OK)
+8️⃣ Optionally push built images to Docker Hub
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔧 KEY FEATURES
+✔ Supports selective image builds (`BUILD_IMAGES` checkbox)
+✔ Generates Docker tags based on Git branch / tag (e.g., `release/1.8` → `release-1.8`)
+✔ Secure manual approval step (only users defined in `APPROVERS`)
+✔ Parallel or serial build mode controlled by parameter `Parallelbuild`
+✔ Trivy scanning with configurable behavior:
+     • fail-build  → stop pipeline on HIGH/CRITICAL vulnerabilities
+     • warn-only   → mark build UNSTABLE and continue
+✔ Docker cache can be enabled/disabled via `USE_CACHE`
+✔ Optional push to Docker Hub via `PUSH_IMAGES`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 MANUAL APPROVAL GATE
+Before any build/deploy action, the pipeline:
+  • Displays all input parameters in a popup dialog
+  • Requires approval from a submitter in `env.APPROVERS`
+  • Captures and logs the approving user name
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧱 DOCKER IMAGE MATRIX
+Each service corresponds to a Dockerfile:
+  • web          → app.Dockerfile
+  • worker-app   → app.Dockerfile
+  • worker-mail  → mail.Dockerfile
+  • nginx        → nginx.Dockerfile
+
+만 The pipeline builds only the services selected in the `BUILD_IMAGES` parameter.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡 SECURITY
+🔐 Credentials are stored securely in Jenkins as `dockerhub-creds`
+🔒 Approval stage requires authorized usernames
+🔍 Trivy scanning prevents vulnerable images from being deployed unnoticed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 RESULT OF EXECUTION
+If completed successfully:
+  ✔ All selected Docker images are built
+  ✔ Scanned and validated for HIGH/CRITICAL vulnerabilities
+  ✔ Pushed to Docker Hub (if PUSH_IMAGES = true)
+
+If vulnerabilities exist with `warn-only`, build results IN UNSTABLE but continues.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 IDEAL USE CASES
+🟢 Production image builds
+🟢 Controlled rollouts where approvals are required
+🟢 Multi-service microservice repositories
+🟢 Security-first CI pipelines with scanning enforcement
+
+================================================================================
+*/
+
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 
