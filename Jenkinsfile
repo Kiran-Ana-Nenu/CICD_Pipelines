@@ -62,17 +62,34 @@ ${paramText}""",
         }
     }
 }
-    stage('Validate Git Ref') {
+    stage('Validate Git Ref + Generate Image Tags') {
       steps {
         script {
           def ref = params.GIT_REF.trim()
           if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-            error "Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
+            error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
           }
-          env.IMAGE_TAG = ref.replaceAll('/', '-')
-          env.FULL_IMAGE = "${env.DOCKER_REPO}:${env.IMAGE_TAG}"
+
+          env.IMAGE_TAG = ref.replaceAll("/", "-")
+
+          // Define all images
+          def allImages = [
+            "web"        : "${env.DOCKER_REPO_PREFIX}-web:${env.IMAGE_TAG}",
+            "worker-app" : "${env.DOCKER_REPO_PREFIX}-worker-app:${env.IMAGE_TAG}",
+            "worker-mail": "${env.DOCKER_REPO_PREFIX}-worker-mail:${env.IMAGE_TAG}",
+            "nginx"      : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
+          ]
+
+          // Filter based on selected images
+          def selectedImages = [:]
+          params.BUILD_IMAGES.split(",").each { img ->
+            if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
+          }
+
+          env.IMAGES = JsonOutput.toJson(selectedImages)
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
-          echo "FULL_IMAGE = ${env.FULL_IMAGE}"
+          echo "📦 Selected Docker images to build:"
+          readJSON(text: env.IMAGES).each { k, v -> echo " - ${k}: ${v}" }
         }
       }
     }
@@ -82,103 +99,136 @@ ${paramText}""",
         script {
           sh(params.DEBUG_MODE ? "set -x ; true" : "true")
           checkout([$class: 'GitSCM',
-            branches: [[name: params.GIT_REF]],
-            userRemoteConfigs: [[url: env.GIT_URL]]
+              branches: [[name: params.GIT_REF]],
+              userRemoteConfigs: [[url: env.GIT_URL]]
           ])
         }
       }
     }
 
-// stage('Maven Build') {
+// stage('Docker Build (Parallel)') {
 //   steps {
 //     script {
-//       sh(params.DEBUG_MODE ? "set -x ; true" : "true")
+//       def images = readJSON(text: env.IMAGES)
+//       def buildTasks = [:]
+//       def dockerPath = "docker/"
 
-//       // 1️⃣ Update dependencies to the latest release versions
-//       sh "mvn versions:use-latest-releases -DgenerateBackupPoms=false"
+//       images.each { name, image ->
+//         buildTasks["Build ${name}"] = {
+//           script {
+//             def dockerFile = ""
+//             // Assign Dockerfile based on image name
+//             switch (name) {
+//               case "web":
+//               case "worker-app":
+//                 dockerFile = "app.Dockerfile"
+//                 break
+//               case "worker-mail":
+//                 dockerFile = "mail.Dockerfile"
+//                 break
+//               case "nginx":
+//                 dockerFile = "nginx.Dockerfile"
+//                 break
+//               default:
+//                 error("❌ Unknown image: ${name}")
+//             }
 
-//       // 2️⃣ Optional: update plugins to latest versions too
-//       // sh "mvn versions:use-latest-versions -DgenerateBackupPoms=false"
+//             echo "🔨 Building ${name} -> ${image} using ${dockerFile}"
+//             sh """
+//               docker build \
+//                 ${params.USE_CACHE ? "" : "--no-cache"} \
+//                 -f ${dockerPath}/${dockerFile} \
+//                 --build-arg APP_ROLE=${name} \
+//                 --build-arg APP_VERSION=${env.IMAGE_TAG} \
+//                 -t ${image} ${dockerPath}
+//             """
+//           }
+//         }
+//       }
 
-//       // 3️⃣ Build
-//       def skip = params.SKIP_TESTS ? "-DskipTests=true" : ""
-//       sh "mvn -B clean install ${skip}"
-//     }
-//   }
-//   post {
-//     always {
-//       junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
-//       archiveArtifacts allowEmptyArchive: true, artifacts: '**/target/*.jar'
+//       parallel buildTasks
 //     }
 //   }
 // }
 
-
-    stage('Docker Build (no cache + optimized)') {
-      steps {
-        script {
-          sh(params.DEBUG_MODE ? "set -x ; true" : "true")
-          sh """
-            docker build \\
-              --no-cache \\
-              --build-arg GIT_REF=${params.GIT_REF} \\
-              --build-arg APP_VERSION=${env.IMAGE_TAG} \\
-              -t ${FULL_IMAGE} .
-          """
-        }
-      }
-    }
-
-
-stage('Trivy Scan') {
+stage('Docker Build (Parallel)') {
   steps {
     script {
-      echo "🔍 Running Trivy scan on ${FULL_IMAGE} (JSON output only)..."
+      def images = readJSON(text: env.IMAGES)
+      def buildTasks = [:]
+      def dockerPath = "docker"
 
-      // Save JSON only
-      sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${FULL_IMAGE} -o trivy.json || true"
+      images.each { name, image ->
+        buildTasks["Build ${name}"] = {
+          script {
+            def dockerFile = ""
+            switch (name) {
+              case "web":
+              case "worker-app": dockerFile = "app.Dockerfile"; break
+              case "worker-mail": dockerFile = "mail.Dockerfile"; break
+              case "nginx": dockerFile = "nginx.Dockerfile"; break
+              default: error("❌ Unknown image: ${name}")
+            }
 
-      archiveArtifacts artifacts: 'trivy.json', allowEmptyArchive: true
-
-      // Read JSON safely
-      def jsonText = readFile('trivy.json')
-      def json = new JsonSlurper().parseText(jsonText)
-
-      def criticalCount = 0
-      json.Results.each { result ->
-          if (result.Vulnerabilities) {
-              criticalCount += result.Vulnerabilities.size()
+            echo "🔨 Building ${name} -> ${image} using ${dockerFile}"
+            sh """
+              docker build \
+                ${params.USE_CACHE ? "" : "--no-cache"} \
+                -f ${dockerPath}/${dockerFile} \
+                --build-arg APP_ROLE=${name} \
+                --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                -t ${image} .
+            """
           }
+        }
       }
-
-      echo "⚠ Number of HIGH/CRITICAL vulnerabilities found: ${criticalCount}"
-
-      if (criticalCount > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
-          error "❌ Trivy HIGH/CRITICAL vulnerability check failed with ${criticalCount} vulnerabilities."
-      } else if (criticalCount > 0) {
-          currentBuild.result = 'UNSTABLE'
-          echo "⚠ Trivy found vulnerabilities — build marked UNSTABLE."
-      } else {
-          echo "✅ No HIGH/CRITICAL vulnerabilities found."
-      }
+      parallel buildTasks
     }
   }
 }
 
-
-
-
-
-    stage('Push Image to Docker Hub') {
+    stage('Trivy Scan') {
       steps {
         script {
-          sh(params.DEBUG_MODE ? "set -x ; true" : "true")
+          def images = readJSON(text: env.IMAGES)
+          images.each { name, image ->
+            echo "🔍 Trivy scanning ${image}"
+            sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+            archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+
+            def jsonText = readFile("trivy-${name}.json")
+            def json = new JsonSlurper().parseText(jsonText)
+            def total = 0
+            json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+
+            echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+            if (total > 0 && params.TRIVY_FAIL_ACTION == 'fail-build') {
+              error "❌ Vulnerabilities found in ${name} — failing build"
+            } else if (total > 0) {
+              currentBuild.result = 'UNSTABLE'
+              echo "⚠ Vulnerabilities found — marking UNSTABLE"
+            } else {
+              echo "✅ No HIGH/CRITICAL vulnerabilities"
+            }
+          }
+        }
+      }
+    }
+
+    stage('Push Images to Docker Hub') {
+      when { expression { params.PUSH_IMAGES } }
+      steps {
+        script {
           withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-            sh """
-              echo "${PASS}" | docker login ${DOCKER_HUB_URL} -u "${USER}" --password-stdin
-              docker push ${FULL_IMAGE}
-              docker logout
-            """
+            sh "echo ${PASS} | docker login ${DOCKER_HUB_URL} -u ${USER} --password-stdin"
+
+            def images = readJSON(text: env.IMAGES)
+            images.each { name, image ->
+              echo "📤 Pushing ${image}"
+              sh "docker push ${image}"
+            }
+
+            sh "docker logout"
           }
         }
       }
@@ -187,16 +237,16 @@ stage('Trivy Scan') {
 
   post {
     always {
-      echo "🔁 Pipeline completed — status: ${currentBuild.result ?: 'SUCCESS'}"
+      echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
     }
     success {
-      echo "🎉 SUCCESS — Image pushed: ${env.FULL_IMAGE}"
+      echo "🎉 SUCCESS — Selected Docker images pushed successfully"
     }
     unstable {
-      echo "⚠ UNSTABLE — Image pushed but Trivy detected vulnerabilities"
+      echo "⚠ UNSTABLE — Images pushed but Trivy found vulnerabilities"
     }
     failure {
-      echo "❌ FAILED — See logs"
+      echo "❌ FAILED — see logs"
     }
   }
 }
