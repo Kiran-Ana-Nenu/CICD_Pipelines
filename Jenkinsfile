@@ -11,7 +11,7 @@ pipeline {
         string(name: 'GIT_REF', defaultValue: 'release/1.8', description: 'Branch (release/*) or tag (v*)')
         booleanParam(name: 'CLEAN_BEFORE', defaultValue: false, description: 'Clean workspace before build')
         choice(name: 'TRIVY_FAIL_ACTION', choices: ['fail-build', 'warn-only'], description: 'Action on HIGH/CRITICAL vulnerabilities')
-        booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs (set -x, print env, system info)')
+        booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'Enable debug logs')
         extendedChoice(
             name: 'BUILD_IMAGES',
             type: 'PT_CHECKBOX',
@@ -21,8 +21,8 @@ pipeline {
         booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
 
-        /** NEW PARAMETER */
-        booleanParam(name: 'Parallelbuild', defaultValue: true, description: 'Build Docker images in parallel (uncheck for serial)')
+        /* NEW */
+        booleanParam(name: 'Parallelbuild', defaultValue: true, description: 'Build Docker images in parallel (disable for serial build)')
     }
 
     environment {
@@ -31,7 +31,7 @@ pipeline {
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        IMAGES = '[]' // default
+        // IMAGES = '[]' // default
     }
 
     stages {
@@ -80,7 +80,12 @@ ${paramText}""",
 
                     def selectedImages = [:]
                     params.BUILD_IMAGES.split(",").each { img ->
+                        img = img.trim()
                         if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
+                    }
+
+                    if (selectedImages.isEmpty()) {
+                        error "❌ No images selected in BUILD_IMAGES. Build cannot continue."
                     }
 
                     env.IMAGES = JsonOutput.toJson(selectedImages)
