@@ -99,11 +99,12 @@ pipeline {
     }
 
     environment {
-        GIT_URL = "YOUR_GIT_REPO_URL"
+        GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
-        DOCKER_REPO_PREFIX = "YOUR_DOCKER_REPO_PREFIX"
+        DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
+        // IMAGES = '[]' // default
     }
 
     stages {
@@ -141,8 +142,10 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                         "nginx"      : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
                     ]
 
+                    // CPS-safe collect instead of spread operator
+                    def selected = params.BUILD_IMAGES?.split(",").collect { it.trim() }
                     def selectedImages = [:]
-                    def selected = params.BUILD_IMAGES?.split(",")*.trim()
+
                     if (!selected || selected.contains("all")) {
                         echo "📦 Building ALL images"
                         selectedImages = allImages
@@ -343,5 +346,4 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
         failure { echo "❌ FAILED — see logs" }
     }
 }
-
 
