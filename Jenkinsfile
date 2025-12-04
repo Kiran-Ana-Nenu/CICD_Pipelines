@@ -75,6 +75,8 @@ If vulnerabilities exist with `warn-only`, build results IN UNSTABLE but continu
 */
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
+def htmlTemplate = readFile("trivy-template.html")
+
 
 pipeline {
     agent any
@@ -345,41 +347,37 @@ stage('Trivy Scan') {
                 sh """
                     trivy image \
                         --format template \
-                        --template "@/usr/local/share/trivy/templates/custom-vuln-report.tpl" \
-                        --exit-code 1 \
+                        --template "@trivy-report-template.tpl" \
+                        --exit-code 0 \
                         --severity HIGH,CRITICAL \
                         ${image} > trivy-${name}.html || true
                 """
 
                 archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
 
-                def report = readFile("trivy-${name}.html")
-                def vulnerable = report.contains("CRITICAL") || report.contains("HIGH")
+                // Detect vulnerabilities by reading the generated HTML
+                def html = readFile("trivy-${name}.html")
+                def vulnerable = html.contains("CRITICAL") || html.contains("HIGH")
 
                 if (vulnerable) {
                     unstableImages << name
                     if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                        error "❌ HIGH/CRITICAL vulnerabilities found in ${name}"
+                        error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
                     } else {
                         currentBuild.result = 'UNSTABLE'
-                        echo "⚠ Marking build UNSTABLE due to vulnerabilities"
+                        echo "⚠ Marking build UNSTABLE due to vulnerabilities in ${name}"
                     }
                 } else {
-                    echo "🟢 No HIGH/CRITICAL vulnerabilities in ${name}"
+                    echo "🟢 ${name} passed vulnerability scan"
                 }
             }
 
             env.UNSTABLE_IMGS = unstableImages.join(",")
-
             if (unstableImages) {
-                echo "\n============================================================"
-                echo "🚨 UNSTABLE IMAGES DETECTED"
-                unstableImages.each { img -> echo " - ${img}" }
-                echo "============================================================\n"
+                echo "\n🚨 UNSTABLE IMAGES DETECTED"
+                unstableImages.each { println " - ${it}" }
             } else {
-                echo "\n============================================================"
-                echo "🟢 All images passed Trivy security scan"
-                echo "============================================================\n"
+                echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
             }
         }
     }
@@ -390,18 +388,21 @@ stage('Publish Security Reports') {
     steps {
         script {
             def images = readJSON(text: env.IMAGES)
+
             images.each { name, image ->
                 publishHTML(target: [
-                    reportName: "Trivy Report - ${name}",
+                    reportName: "🔐 Trivy Report — ${name}",
                     reportDir: ".",
                     reportFiles: "trivy-${name}.html",
                     keepAll: true,
-                    allowMissing: true
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true
                 ])
             }
         }
     }
 }
+
 
 
         stage('Push Images to Docker Hub') {
