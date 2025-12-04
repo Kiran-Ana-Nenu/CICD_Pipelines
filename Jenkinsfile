@@ -93,7 +93,8 @@ pipeline {
             value: 'web,worker-app,worker-mail,nginx',
             description: 'Select which images to build'
         )
-        booleanParam(name: 'DOCKER_PRUNE?',defaultValue: true, description: 'Enable Docker prune before build (frees cache & prevents snapshot issues)')
+        // booleanParam(name: 'DOCKER_PRUNE?',defaultValue: true, description: 'Enable Docker prune before build (frees cache & prevents snapshot issues)')
+        booleanParam(name: 'DOCKER_PRUNE', defaultValue: true, description: 'Enable Docker prune before build')
         booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
         booleanParam(name: 'Parallelbuild?', defaultValue: true, description: 'Build Docker images in parallel (disable for serial build)')
@@ -184,9 +185,23 @@ ${paramText}""",
             }
         }
 
+// stage('Docker Cleanup') {
+//     when {
+//         expression { return params.DOCKER_PRUNE == false }
+//     }
+//     steps {
+//         script {
+//             echo "🧹 Cleaning Docker cache to prevent snapshot corruption and free space..."
+//             sh '''
+//                 docker system prune --all --force --volumes || true
+//             '''
+// //         }
+//     }
+// }
+
 stage('Docker Cleanup') {
     when {
-        expression { return params.DOCKER_PRUNE == false }
+        expression { return params.DOCKER_PRUNE }
     }
     steps {
         script {
@@ -330,7 +345,7 @@ stage('Trivy Scan') {
                 sh """
                     trivy image \
                         --format template \
-                        --template "@/usr/local/share/trivy/templates/html.tpl" \
+                        --template "@/usr/local/share/trivy/templates/custom-vuln-report.tpl" \
                         --exit-code 1 \
                         --severity HIGH,CRITICAL \
                         ${image} > trivy-${name}.html || true
@@ -344,13 +359,13 @@ stage('Trivy Scan') {
                 if (vulnerable) {
                     unstableImages << name
                     if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                        error "❌ Vulnerabilities found in ${name} — failing build"
+                        error "❌ HIGH/CRITICAL vulnerabilities found in ${name}"
                     } else {
                         currentBuild.result = 'UNSTABLE'
-                        echo "⚠ Vulnerabilities found — marking UNSTABLE"
+                        echo "⚠ Marking build UNSTABLE due to vulnerabilities"
                     }
                 } else {
-                    echo "✅ No HIGH/CRITICAL vulnerabilities in ${name}"
+                    echo "🟢 No HIGH/CRITICAL vulnerabilities in ${name}"
                 }
             }
 
@@ -358,20 +373,20 @@ stage('Trivy Scan') {
 
             if (unstableImages) {
                 echo "\n============================================================"
-                echo "🚨  UNSTABLE IMAGES DETECTED"
+                echo "🚨 UNSTABLE IMAGES DETECTED"
                 unstableImages.each { img -> echo " - ${img}" }
                 echo "============================================================\n"
             } else {
                 echo "\n============================================================"
-                echo "🟢 All images passed Trivy scan — no vulnerabilities"
+                echo "🟢 All images passed Trivy security scan"
                 echo "============================================================\n"
             }
         }
     }
 }
 
-stage('Publish Trivy Reports') {
-    when { expression { return !readJSON(text: env.IMAGES).isEmpty() } }
+
+stage('Publish Security Reports') {
     steps {
         script {
             def images = readJSON(text: env.IMAGES)
@@ -380,13 +395,14 @@ stage('Publish Trivy Reports') {
                     reportName: "Trivy Report - ${name}",
                     reportDir: ".",
                     reportFiles: "trivy-${name}.html",
-                    alwaysLinkToLastBuild: true,
-                    keepAll: true
+                    keepAll: true,
+                    allowMissing: true
                 ])
             }
         }
     }
 }
+
 
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
