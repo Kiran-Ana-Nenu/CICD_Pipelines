@@ -272,52 +272,128 @@ stage('Docker Build (Parallel/Serial)') {
     }
 }
 
-        stage('Trivy Scan') {
-            steps {
-                script {
-                    def images = readJSON(text: env.IMAGES)
-                    def unstableImages = []
+        // stage('Trivy Scan') {
+        //     steps {
+        //         script {
+        //             def images = readJSON(text: env.IMAGES)
+        //             def unstableImages = []
 
-                    images.each { name, image ->
-                        echo "🔍 Trivy scanning ${image}"
-                        sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
-                        archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+        //             images.each { name, image ->
+        //                 echo "🔍 Trivy scanning ${image}"
+        //                 sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
+        //                 archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
 
-                        def jsonText = readFile("trivy-${name}.json")
-                        def json = new JsonSlurper().parseText(jsonText)
-                        def total = 0
-                        json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+        //                 def jsonText = readFile("trivy-${name}.json")
+        //                 def json = new JsonSlurper().parseText(jsonText)
+        //                 def total = 0
+        //                 json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
 
-                        echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
+        //                 echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
 
-                        if (total > 0) {
-                            unstableImages << name
-                            if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                                error "❌ Vulnerabilities found in ${name} — failing build"
-                            } else {
-                                currentBuild.result = 'UNSTABLE'
-                                echo "⚠ Vulnerabilities found — marking UNSTABLE"
-                            }
-                        } else {
-                            echo "✅ No HIGH/CRITICAL vulnerabilities"
-                        }
-                    }
+        //                 if (total > 0) {
+        //                     unstableImages << name
+        //                     if (params.TRIVY_FAIL_ACTION == 'fail-build') {
+        //                         error "❌ Vulnerabilities found in ${name} — failing build"
+        //                     } else {
+        //                         currentBuild.result = 'UNSTABLE'
+        //                         echo "⚠ Vulnerabilities found — marking UNSTABLE"
+        //                     }
+        //                 } else {
+        //                     echo "✅ No HIGH/CRITICAL vulnerabilities"
+        //                 }
+        //             }
 
-                    env.UNSTABLE_IMGS = unstableImages.join(",")
+        //             env.UNSTABLE_IMGS = unstableImages.join(",")
 
-                    if (unstableImages) {
-                        echo "\n============================================================"
-                        echo "🚨  UNSTABLE IMAGES DETECTED"
-                        unstableImages.each { img -> echo " - ${img}" }
-                        echo "============================================================\n"
+        //             if (unstableImages) {
+        //                 echo "\n============================================================"
+        //                 echo "🚨  UNSTABLE IMAGES DETECTED"
+        //                 unstableImages.each { img -> echo " - ${img}" }
+        //                 echo "============================================================\n"
+        //             } else {
+        //                 echo "\n============================================================"
+        //                 echo "🟢 All images passed Trivy scan — no vulnerabilities"
+        //                 echo "============================================================\n"
+        //             }
+        //         }
+        //     }
+        // }
+stage('Trivy Scan') {
+    steps {
+        script {
+            def images = readJSON(text: env.IMAGES)
+            def unstableImages = []
+
+            images.each { name, image ->
+                echo "🔍 Trivy scanning ${image}"
+
+                // Generate HTML report
+                sh """
+                    trivy image \
+                    --severity HIGH,CRITICAL \
+                    --format template \
+                    --template @trivy-html.tpl \
+                    ${image} -o trivy-${name}.html || true
+                """
+
+                // Archive HTML so user can download
+                archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
+
+                // Count vulnerabilities based on HTML rows (<tr> tags)
+                def findings = sh(
+                    script: "grep -c '<tr>' trivy-${name}.html || true",
+                    returnStdout: true
+                ).trim().toInteger() - 1
+
+                findings = findings < 0 ? 0 : findings
+                echo "⚠ HIGH/CRITICAL count for ${name}: ${findings}"
+
+                // Check severity logic
+                if (findings > 0) {
+                    unstableImages << name
+                    if (params.TRIVY_FAIL_ACTION == 'fail-build') {
+                        error "❌ Vulnerabilities detected in ${name} — failing build"
                     } else {
-                        echo "\n============================================================"
-                        echo "🟢 All images passed Trivy scan — no vulnerabilities"
-                        echo "============================================================\n"
+                        currentBuild.result = "UNSTABLE"
+                        echo "⚠ Vulnerabilities detected — build marked UNSTABLE"
                     }
+                } else {
+                    echo "✅ No HIGH/CRITICAL vulnerabilities for ${name}"
                 }
             }
+
+            env.UNSTABLE_IMGS = unstableImages.join(",")
+
+            if (unstableImages) {
+                echo "\n============================================================"
+                echo "🚨  UNSTABLE IMAGES DETECTED"
+                unstableImages.each { img -> echo " - ${img}" }
+                echo "============================================================\n"
+            } else {
+                echo "\n============================================================"
+                echo "🟢 All images passed Trivy scan — no high/critical vulnerabilities"
+                echo "============================================================\n"
+            }
         }
+    }
+}
+stage('Publish Trivy Reports') {
+    when { expression { return !readJSON(text: env.IMAGES).isEmpty() } }
+    steps {
+        script {
+            def images = readJSON(text: env.IMAGES)
+            images.each { name, image ->
+                publishHTML(target: [
+                    reportName: "Trivy Report - ${name}",
+                    reportDir: ".",
+                    reportFiles: "trivy-${name}.html",
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true
+                ])
+            }
+        }
+    }
+}
 
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
