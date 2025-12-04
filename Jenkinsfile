@@ -75,14 +75,10 @@ If vulnerabilities exist with `warn-only`, build results IN UNSTABLE but continu
 */
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
-def htmlTemplate = readFile("trivy-template.html")
-
 
 pipeline {
     agent any
-    options {
-        timestamps()
-    }
+    options { timestamps() }
 
     parameters {
         string(name: 'GIT_REF', defaultValue: 'release/1.8', description: 'Branch (release/*) or tag (v*)')
@@ -92,50 +88,39 @@ pipeline {
         extendedChoice(
             name: 'BUILD_IMAGES',
             type: 'PT_CHECKBOX',
-            value: 'web,worker-app,worker-mail,nginx',
-            description: 'Select which images to build'
+            value: 'all,web,worker-app,worker-mail,nginx',
+            description: 'Select which images to build. Choose "all" to build all images.',
+            defaultValue: 'all'
         )
-        // booleanParam(name: 'DOCKER_PRUNE?',defaultValue: true, description: 'Enable Docker prune before build (frees cache & prevents snapshot issues)')
         booleanParam(name: 'DOCKER_PRUNE', defaultValue: true, description: 'Enable Docker prune before build')
         booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
-        booleanParam(name: 'Parallelbuild?', defaultValue: true, description: 'Build Docker images in parallel (disable for serial build)')
-        
-
+        booleanParam(name: 'Parallelbuild', defaultValue: true, description: 'Build Docker images in parallel')
     }
 
     environment {
-        GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
+        GIT_URL = "YOUR_GIT_REPO_URL"
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
-        DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
+        DOCKER_REPO_PREFIX = "YOUR_DOCKER_REPO_PREFIX"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        // IMAGES = '[]' // default
     }
 
     stages {
 
         stage('Clean Workspace (Pre-build)') {
             when { expression { params.CLEAN_BEFORE } }
-            steps {
-                echo "🧹 Cleaning workspace..."
-                cleanWs()
-            }
+            steps { cleanWs() }
         }
 
         stage('Admin Approval') {
             steps {
                 script {
-                    def paramText = params.collect { k, v -> "${k} = ${v}" }.join("\n")
-                    def user = input(
-                        message: """Admin approval required to continue workspace cleanup.
+                    def paramText = params.collect { k,v -> "${k} = ${v}" }.join("\n")
+                    input message: """Admin approval required.
 
 📌 Job Parameters:
-${paramText}""",
-                        ok: 'Approve',
-                        submitter: env.APPROVERS
-                    )
-                    echo "✅ Approved by: ${user}"
+${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                 }
             }
         }
@@ -145,9 +130,8 @@ ${paramText}""",
                 script {
                     def ref = params.GIT_REF.trim()
                     if (!(ref ==~ /^v.*/ || ref ==~ /^release.*/ || ref ==~ /^release\/.*/)) {
-                        error "❌ Invalid ref '${ref}'. Allowed only: v* tags or release* branches."
+                        error "❌ Invalid ref '${ref}'"
                     }
-
                     env.IMAGE_TAG = ref.replaceAll("/", "-")
 
                     def allImages = [
@@ -158,19 +142,23 @@ ${paramText}""",
                     ]
 
                     def selectedImages = [:]
-                    params.BUILD_IMAGES.split(",").each { img ->
-                        img = img.trim()
-                        if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
+                    def selected = params.BUILD_IMAGES?.split(",")*.trim()
+                    if (!selected || selected.contains("all")) {
+                        echo "📦 Building ALL images"
+                        selectedImages = allImages
+                    } else {
+                        selected.each { img ->
+                            if (allImages.containsKey(img)) selectedImages[img] = allImages[img]
+                        }
                     }
 
                     if (selectedImages.isEmpty()) {
-                        error "❌ No images selected in BUILD_IMAGES. Build cannot continue."
+                        error "❌ No valid images selected to build"
                     }
 
                     env.IMAGES = JsonOutput.toJson(selectedImages)
-                    echo "IMAGE_TAG = ${env.IMAGE_TAG}"
-                    echo "📦 Selected Docker images to build:"
-                    readJSON(text: env.IMAGES).each { k, v -> echo " - ${k}: ${v}" }
+                    echo "📦 Docker images to build:"
+                    readJSON(text: env.IMAGES).each { k,v -> echo " - ${k}: ${v}" }
                 }
             }
         }
@@ -187,70 +175,67 @@ ${paramText}""",
             }
         }
 
-// stage('Docker Cleanup') {
-//     when {
-//         expression { return params.DOCKER_PRUNE == false }
-//     }
-//     steps {
-//         script {
-//             echo "🧹 Cleaning Docker cache to prevent snapshot corruption and free space..."
-//             sh '''
-//                 docker system prune --all --force --volumes || true
-//             '''
-// //         }
-//     }
-// }
-
-stage('Docker Cleanup') {
-    when {
-        expression { return params.DOCKER_PRUNE }
-    }
-    steps {
-        script {
-            echo "🧹 Cleaning Docker cache to prevent snapshot corruption and free space..."
-            sh '''
-                docker system prune --all --force --volumes || true
-            '''
+        stage('Docker Cleanup') {
+            when { expression { params.DOCKER_PRUNE } }
+            steps {
+                script {
+                    echo "🧹 Cleaning Docker cache..."
+                    sh 'docker system prune --all --force --volumes || true'
+                }
+            }
         }
-    }
-}
 
+        stage('Docker Build (Parallel/Serial)') {
+            steps {
+                script {
+                    echo "⏳ Initializing Buildx..."
+                    sh '''
+                        docker buildx rm jenkins-builder || true
+                        docker buildx create --name jenkins-builder --use
+                        docker buildx inspect --bootstrap
+                    '''
 
-stage('Docker Build (Parallel/Serial)') {
-    steps {
-        script {
+                    def images = readJSON(text: env.IMAGES)
+                    def dockerPath = "docker"
 
-            echo "⏳ Initializing Buildx builder (avoiding snapshot corruption issues)..."
-            sh '''
-                docker buildx rm jenkins-builder || true
-                docker buildx create --name jenkins-builder --use
-                docker buildx inspect --bootstrap
-            '''
-
-            def images = readJSON(text: env.IMAGES)
-            def dockerPath = "docker"
-
-            if (params.Parallelbuild) {
-                echo "🔥 Parallel build mode enabled"
-                def buildTasks = [:]
-
-                images.each { name, image ->
-                    buildTasks["Build ${name}"] = {
-                        script {
-                            echo "\n==================== BUILDING IMAGE → ${name} ====================\n"
+                    if (params.Parallelbuild) {
+                        echo "🔥 Parallel build enabled"
+                        def buildTasks = [:]
+                        images.each { name, image ->
+                            buildTasks["Build ${name}"] = {
+                                script {
+                                    def dockerFile = ""
+                                    switch(name) {
+                                        case "web":
+                                        case "worker-app": dockerFile = "app.Dockerfile"; break
+                                        case "worker-mail": dockerFile = "mail.Dockerfile"; break
+                                        case "nginx": dockerFile = "nginx.Dockerfile"; break
+                                    }
+                                    echo "\n==================== BUILDING ${name} ====================\n"
+                                    sh """
+                                        docker buildx build --load ${params.USE_CACHE ? "" : "--no-cache"} \
+                                        -f ${dockerPath}/${dockerFile} \
+                                        --build-arg APP_ROLE=${name} \
+                                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                                        -t ${image} .
+                                    """
+                                }
+                            }
+                        }
+                        parallel buildTasks
+                    } else {
+                        echo "🐢 Serial build mode"
+                        images.each { name, image ->
                             def dockerFile = ""
-                            switch (name) {
+                            switch(name) {
                                 case "web":
                                 case "worker-app": dockerFile = "app.Dockerfile"; break
                                 case "worker-mail": dockerFile = "mail.Dockerfile"; break
                                 case "nginx": dockerFile = "nginx.Dockerfile"; break
-                                default: error("❌ Unknown image: ${name}")
                             }
-
+                            echo "\n==================== BUILDING ${name} ====================\n"
                             sh """
-                              docker buildx build \
-                                --load \
-                                ${params.USE_CACHE ? "" : "--no-cache"} \
+                                docker buildx build --load ${params.USE_CACHE ? "" : "--no-cache"} \
                                 -f ${dockerPath}/${dockerFile} \
                                 --build-arg APP_ROLE=${name} \
                                 --build-arg APP_VERSION=${env.IMAGE_TAG} \
@@ -259,151 +244,70 @@ stage('Docker Build (Parallel/Serial)') {
                         }
                     }
                 }
-                parallel buildTasks
-
-            } else {
-                echo "🐢 Serial mode enabled — building one image at a time"
-                images.each { name, image ->
-                    echo "\n==================== BUILDING IMAGE → ${name} ====================\n"
-                    def dockerFile = ""
-                    switch (name) {
-                        case "web":
-                        case "worker-app": dockerFile = "app.Dockerfile"; break
-                        case "worker-mail": dockerFile = "mail.Dockerfile"; break
-                        case "nginx": dockerFile = "nginx.Dockerfile"; break
-                        default: error("❌ Unknown image: ${name}")
-                    }
-
-                    sh """
-                      docker buildx build \
-                        --load \
-                        ${params.USE_CACHE ? "" : "--no-cache"} \
-                        -f ${dockerPath}/${dockerFile} \
-                        --build-arg APP_ROLE=${name} \
-                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                        -t ${image} .
-                    """
-                }
             }
         }
-    }
-}
 
-        // stage('Trivy Scan') {
-        //     steps {
-        //         script {
-        //             def images = readJSON(text: env.IMAGES)
-        //             def unstableImages = []
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    def unstableImages = []
 
-        //             images.each { name, image ->
-        //                 echo "🔍 Trivy scanning ${image}"
-        //                 sh "trivy image --format json --exit-code 1 --severity HIGH,CRITICAL ${image} -o trivy-${name}.json || true"
-        //                 archiveArtifacts artifacts: "trivy-${name}.json", allowEmptyArchive: true
+                    images.each { name, image ->
+                        echo "🔍 Trivy scanning ${image}"
+                        sh """
+                            trivy image \
+                            --format template \
+                            --template "@trivy-report-template.tpl" \
+                            --exit-code 0 \
+                            --severity HIGH,CRITICAL \
+                            ${image} > trivy-${name}.html || true
+                        """
+                        archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
 
-        //                 def jsonText = readFile("trivy-${name}.json")
-        //                 def json = new JsonSlurper().parseText(jsonText)
-        //                 def total = 0
-        //                 json.Results?.each { r -> total += r.Vulnerabilities?.size() ?: 0 }
+                        def html = readFile("trivy-${name}.html")
+                        def vulnerable = html.contains("CRITICAL") || html.contains("HIGH")
+                        if (vulnerable) {
+                            unstableImages << name
+                            if (params.TRIVY_FAIL_ACTION == 'fail-build') {
+                                error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
+                            } else {
+                                currentBuild.result = 'UNSTABLE'
+                                echo "⚠ Marking UNSTABLE due to vulnerabilities in ${name}"
+                            }
+                        } else {
+                            echo "🟢 ${name} passed Trivy scan"
+                        }
+                    }
 
-        //                 echo "⚠ HIGH/CRITICAL count for ${name}: ${total}"
-
-        //                 if (total > 0) {
-        //                     unstableImages << name
-        //                     if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-        //                         error "❌ Vulnerabilities found in ${name} — failing build"
-        //                     } else {
-        //                         currentBuild.result = 'UNSTABLE'
-        //                         echo "⚠ Vulnerabilities found — marking UNSTABLE"
-        //                     }
-        //                 } else {
-        //                     echo "✅ No HIGH/CRITICAL vulnerabilities"
-        //                 }
-        //             }
-
-        //             env.UNSTABLE_IMGS = unstableImages.join(",")
-
-        //             if (unstableImages) {
-        //                 echo "\n============================================================"
-        //                 echo "🚨  UNSTABLE IMAGES DETECTED"
-        //                 unstableImages.each { img -> echo " - ${img}" }
-        //                 echo "============================================================\n"
-        //             } else {
-        //                 echo "\n============================================================"
-        //                 echo "🟢 All images passed Trivy scan — no vulnerabilities"
-        //                 echo "============================================================\n"
-        //             }
-        //         }
-        //     }
-        // }
-stage('Trivy Scan') {
-    steps {
-        script {
-            def images = readJSON(text: env.IMAGES)
-            def unstableImages = []
-
-            images.each { name, image ->
-                echo "🔍 Trivy scanning ${image}"
-
-                sh """
-                    trivy image \
-                        --format template \
-                        --template "@trivy-report-template.tpl" \
-                        --exit-code 0 \
-                        --severity HIGH,CRITICAL \
-                        ${image} > trivy-${name}.html || true
-                """
-
-                archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
-
-                // Detect vulnerabilities by reading the generated HTML
-                def html = readFile("trivy-${name}.html")
-                def vulnerable = html.contains("CRITICAL") || html.contains("HIGH")
-
-                if (vulnerable) {
-                    unstableImages << name
-                    if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                        error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
+                    env.UNSTABLE_IMGS = unstableImages.join(",")
+                    if (unstableImages) {
+                        echo "\n🚨 UNSTABLE IMAGES DETECTED"
+                        unstableImages.each { println " - ${it}" }
                     } else {
-                        currentBuild.result = 'UNSTABLE'
-                        echo "⚠ Marking build UNSTABLE due to vulnerabilities in ${name}"
+                        echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
                     }
-                } else {
-                    echo "🟢 ${name} passed vulnerability scan"
                 }
             }
+        }
 
-            env.UNSTABLE_IMGS = unstableImages.join(",")
-            if (unstableImages) {
-                echo "\n🚨 UNSTABLE IMAGES DETECTED"
-                unstableImages.each { println " - ${it}" }
-            } else {
-                echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
+        stage('Publish Security Reports') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    images.each { name, image ->
+                        publishHTML(target: [
+                            reportName: "🔐 Trivy Report — ${name}",
+                            reportDir: ".",
+                            reportFiles: "trivy-${name}.html",
+                            keepAll: true,
+                            allowMissing: true,
+                            alwaysLinkToLastBuild: true
+                        ])
+                    }
+                }
             }
         }
-    }
-}
-
-
-stage('Publish Security Reports') {
-    steps {
-        script {
-            def images = readJSON(text: env.IMAGES)
-
-            images.each { name, image ->
-                publishHTML(target: [
-                    reportName: "🔐 Trivy Report — ${name}",
-                    reportDir: ".",
-                    reportFiles: "trivy-${name}.html",
-                    keepAll: true,
-                    allowMissing: true,
-                    alwaysLinkToLastBuild: true
-                ])
-            }
-        }
-    }
-}
-
-
 
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
@@ -423,28 +327,21 @@ stage('Publish Security Reports') {
         }
     }
 
-post {
-    always {
-        echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
-
-        script {
-            if (env.UNSTABLE_IMGS?.trim()) {
-                echo "\n================= FINAL STATUS — UNSTABLE IMAGES ================="
-                env.UNSTABLE_IMGS.split(",").each { echo " - ${it}" }
-                echo "==================================================================\n"
+    post {
+        always {
+            echo "🔁 Pipeline completed — Status: ${currentBuild.result ?: 'SUCCESS'}"
+            script {
+                if (env.UNSTABLE_IMGS?.trim()) {
+                    echo "\n================= FINAL STATUS — UNSTABLE IMAGES ================="
+                    env.UNSTABLE_IMGS.split(",").each { echo " - ${it}" }
+                    echo "==================================================================\n"
+                }
             }
         }
-    }
-    success {
-        echo "🎉 SUCCESS — Selected Docker images pushed successfully"
-    }
-    unstable {
-        echo "⚠ UNSTABLE — Images built but Trivy found vulnerabilities"
-    }
-    failure {
-        echo "❌ FAILED — see logs"
+        success { echo "🎉 SUCCESS — Selected Docker images pushed successfully" }
+        unstable { echo "⚠ UNSTABLE — Images built but Trivy found vulnerabilities" }
+        failure { echo "❌ FAILED — see logs" }
     }
 }
 
-}
 
