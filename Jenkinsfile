@@ -186,7 +186,7 @@ ${paramText}""",
 
 stage('Docker Cleanup') {
     when {
-        expression { return params.DOCKER_PRUNE == true }
+        expression { return params.DOCKER_PRUNE == false }
     }
     steps {
         script {
@@ -327,38 +327,30 @@ stage('Trivy Scan') {
             images.each { name, image ->
                 echo "🔍 Trivy scanning ${image}"
 
-                // Generate HTML report
                 sh """
                     trivy image \
-                    --severity HIGH,CRITICAL \
-                    --format template \
-                    --template @trivy-html.tpl \
-                    ${image} -o trivy-${name}.html || true
+                        --format template \
+                        --template "@/usr/local/share/trivy/templates/html.tpl" \
+                        --exit-code 1 \
+                        --severity HIGH,CRITICAL \
+                        ${image} > trivy-${name}.html || true
                 """
 
-                // Archive HTML so user can download
                 archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
 
-                // Count vulnerabilities based on HTML rows (<tr> tags)
-                def findings = sh(
-                    script: "grep -c '<tr>' trivy-${name}.html || true",
-                    returnStdout: true
-                ).trim().toInteger() - 1
+                def report = readFile("trivy-${name}.html")
+                def vulnerable = report.contains("CRITICAL") || report.contains("HIGH")
 
-                findings = findings < 0 ? 0 : findings
-                echo "⚠ HIGH/CRITICAL count for ${name}: ${findings}"
-
-                // Check severity logic
-                if (findings > 0) {
+                if (vulnerable) {
                     unstableImages << name
                     if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                        error "❌ Vulnerabilities detected in ${name} — failing build"
+                        error "❌ Vulnerabilities found in ${name} — failing build"
                     } else {
-                        currentBuild.result = "UNSTABLE"
-                        echo "⚠ Vulnerabilities detected — build marked UNSTABLE"
+                        currentBuild.result = 'UNSTABLE'
+                        echo "⚠ Vulnerabilities found — marking UNSTABLE"
                     }
                 } else {
-                    echo "✅ No HIGH/CRITICAL vulnerabilities for ${name}"
+                    echo "✅ No HIGH/CRITICAL vulnerabilities in ${name}"
                 }
             }
 
@@ -371,12 +363,13 @@ stage('Trivy Scan') {
                 echo "============================================================\n"
             } else {
                 echo "\n============================================================"
-                echo "🟢 All images passed Trivy scan — no high/critical vulnerabilities"
+                echo "🟢 All images passed Trivy scan — no vulnerabilities"
                 echo "============================================================\n"
             }
         }
     }
 }
+
 stage('Publish Trivy Reports') {
     when { expression { return !readJSON(text: env.IMAGES).isEmpty() } }
     steps {
