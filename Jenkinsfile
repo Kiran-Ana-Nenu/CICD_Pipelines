@@ -181,45 +181,27 @@ ${paramText}""",
             }
         }
 
-        stage('Docker Build (Parallel/Serial)') {
-            steps {
-                script {
-                    def images = readJSON(text: env.IMAGES)
-                    def dockerPath = "docker"
+stage('Docker Build (Parallel/Serial)') {
+    steps {
+        script {
 
-                    if (params.Parallelbuild) {
-                        echo "🔥 Parallel build mode enabled"
-                        def buildTasks = [:]
+            echo "⏳ Initializing Buildx builder (avoiding snapshot corruption issues)..."
+            sh '''
+                docker buildx rm default || true
+                docker buildx create --name default --use
+                docker buildx inspect --bootstrap
+            '''
 
-                        images.each { name, image ->
-                            buildTasks["Build ${name}"] = {
-                                script {
-                                    echo "\n==================== BUILDING IMAGE → ${name} ====================\n"
-                                    def dockerFile = ""
-                                    switch (name) {
-                                        case "web":
-                                        case "worker-app": dockerFile = "app.Dockerfile"; break
-                                        case "worker-mail": dockerFile = "mail.Dockerfile"; break
-                                        case "nginx": dockerFile = "nginx.Dockerfile"; break
-                                        default: error("❌ Unknown image: ${name}")
-                                    }
+            def images = readJSON(text: env.IMAGES)
+            def dockerPath = "docker"
 
-                                    sh """
-                                      docker build \
-                                        ${params.USE_CACHE ? "" : "--no-cache"} \
-                                        -f ${dockerPath}/${dockerFile} \
-                                        --build-arg APP_ROLE=${name} \
-                                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                                        -t ${image} .
-                                    """
-                                }
-                            }
-                        }
-                        parallel buildTasks
+            if (params.Parallelbuild) {
+                echo "🔥 Parallel build mode enabled"
+                def buildTasks = [:]
 
-                    } else {
-                        echo "🐢 Serial mode enabled — building one image at a time"
-                        images.each { name, image ->
+                images.each { name, image ->
+                    buildTasks["Build ${name}"] = {
+                        script {
                             echo "\n==================== BUILDING IMAGE → ${name} ====================\n"
                             def dockerFile = ""
                             switch (name) {
@@ -231,7 +213,8 @@ ${paramText}""",
                             }
 
                             sh """
-                              docker build \
+                              docker buildx build \
+                                --load \
                                 ${params.USE_CACHE ? "" : "--no-cache"} \
                                 -f ${dockerPath}/${dockerFile} \
                                 --build-arg APP_ROLE=${name} \
@@ -241,8 +224,36 @@ ${paramText}""",
                         }
                     }
                 }
+                parallel buildTasks
+
+            } else {
+                echo "🐢 Serial mode enabled — building one image at a time"
+                images.each { name, image ->
+                    echo "\n==================== BUILDING IMAGE → ${name} ====================\n"
+                    def dockerFile = ""
+                    switch (name) {
+                        case "web":
+                        case "worker-app": dockerFile = "app.Dockerfile"; break
+                        case "worker-mail": dockerFile = "mail.Dockerfile"; break
+                        case "nginx": dockerFile = "nginx.Dockerfile"; break
+                        default: error("❌ Unknown image: ${name}")
+                    }
+
+                    sh """
+                      docker buildx build \
+                        --load \
+                        ${params.USE_CACHE ? "" : "--no-cache"} \
+                        -f ${dockerPath}/${dockerFile} \
+                        --build-arg APP_ROLE=${name} \
+                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                        -t ${image} .
+                    """
+                }
             }
         }
+    }
+}
+
 
         stage('Trivy Scan') {
             steps {
