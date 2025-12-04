@@ -250,67 +250,97 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
             }
         }
 
-        stage('Trivy Scan') {
-            steps {
-                script {
-                    def images = readJSON(text: env.IMAGES)
-                    def unstableImages = []
+stage('Trivy Scan') {
+    steps {
+        script {
+            def images = readJSON(text: env.IMAGES)
+            def unstableImages = []
 
-                    images.each { name, image ->
-                        echo "🔍 Trivy scanning ${image}"
-                        sh """
-                            trivy image \
-                            --format template \
-                            --template "@trivy-report-template.tpl" \
-                            --exit-code 0 \
-                            --severity HIGH,CRITICAL \
-                            ${image} > trivy-${name}.html || true
-                        """
-                        archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
+            // Ensure template exists in workspace
+            def templatePath = "${env.WORKSPACE}/trivy-report-template.tpl"
+            if (!fileExists(templatePath)) {
+                error "❌ Trivy template not found at ${templatePath}. Please add trivy-report-template.tpl to workspace root."
+            }
 
-                        def html = readFile("trivy-${name}.html")
-                        def vulnerable = html.contains("CRITICAL") || html.contains("HIGH")
-                        if (vulnerable) {
-                            unstableImages << name
-                            if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                                error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
-                            } else {
-                                currentBuild.result = 'UNSTABLE'
-                                echo "⚠ Marking UNSTABLE due to vulnerabilities in ${name}"
-                            }
-                        } else {
-                            echo "🟢 ${name} passed Trivy scan"
-                        }
-                    }
+            images.each { name, image ->
+                echo "🔍 Trivy scanning image: ${image}"
 
-                    env.UNSTABLE_IMGS = unstableImages.join(",")
-                    if (unstableImages) {
-                        echo "\n🚨 UNSTABLE IMAGES DETECTED"
-                        unstableImages.each { println " - ${it}" }
+                // Run Trivy with HTML output
+                sh """
+                    trivy image \
+                        --format template \
+                        --template "@${templatePath}" \
+                        --exit-code 0 \
+                        --severity HIGH,CRITICAL \
+                        ${image} > trivy-${name}.html || true
+                """
+
+                // Sanity check: ensure HTML is not empty
+                if (!fileExists("trivy-${name}.html") || readFile("trivy-${name}.html").trim().length() == 0) {
+                    echo "⚠ Warning: Trivy report for ${name} is empty. Adding placeholder."
+                    writeFile file: "trivy-${name}.html", text: """
+                    <html>
+                        <head><title>Trivy Report - ${name}</title></head>
+                        <body>
+                            <h3>⚠ No report generated for ${name}. Possible scan failure or no vulnerabilities found.</h3>
+                        </body>
+                    </html>
+                    """
+                }
+
+                // Archive HTML report for download
+                archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
+
+                // Detect vulnerabilities by inspecting HTML
+                def htmlContent = readFile("trivy-${name}.html")
+                def hasVulnerabilities = htmlContent.contains("CRITICAL") || htmlContent.contains("HIGH")
+
+                if (hasVulnerabilities) {
+                    unstableImages << name
+                    if (params.TRIVY_FAIL_ACTION == 'fail-build') {
+                        error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
                     } else {
-                        echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
+                        currentBuild.result = 'UNSTABLE'
+                        echo "⚠ Marking build UNSTABLE due to vulnerabilities in ${name}"
                     }
+                } else {
+                    echo "🟢 ${name} passed vulnerability scan"
                 }
             }
-        }
 
-        stage('Publish Security Reports') {
-            steps {
-                script {
-                    def images = readJSON(text: env.IMAGES)
-                    images.each { name, image ->
-                        publishHTML(target: [
-                            reportName: "🔐 Trivy Report — ${name}",
-                            reportDir: ".",
-                            reportFiles: "trivy-${name}.html",
-                            keepAll: true,
-                            allowMissing: true,
-                            alwaysLinkToLastBuild: true
-                        ])
-                    }
-                }
+            // Save list of unstable images
+            env.UNSTABLE_IMGS = unstableImages.join(",")
+
+            if (unstableImages) {
+                echo "\n🚨 UNSTABLE IMAGES DETECTED:"
+                unstableImages.each { println " - ${it}" }
+            } else {
+                echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
             }
         }
+    }
+}
+
+stage('Publish Security Reports') {
+    steps {
+        script {
+            def images = readJSON(text: env.IMAGES)
+
+            images.each { name, image ->
+                // Publish HTML reports
+                publishHTML(target: [
+                    reportName: "🔐 Trivy Report — ${name}",
+                    reportDir: ".",
+                    reportFiles: "trivy-${name}.html",
+                    keepAll: true,
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true
+                ])
+            }
+        }
+    }
+}
+
 
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
