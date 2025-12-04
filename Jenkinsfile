@@ -93,9 +93,12 @@ pipeline {
             value: 'web,worker-app,worker-mail,nginx',
             description: 'Select which images to build'
         )
+        booleanParam(name: 'DOCKER_PRUNE',defaultValue: false, description: 'Enable Docker prune before build (frees cache & prevents snapshot issues)')
         booleanParam(name: 'USE_CACHE', defaultValue: true, description: 'Enable Docker build cache')
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true, description: 'Push built images to Docker Hub')
         booleanParam(name: 'Parallelbuild', defaultValue: true, description: 'Build Docker images in parallel (disable for serial build)')
+        
+
     }
 
     environment {
@@ -180,8 +183,11 @@ ${paramText}""",
                 }
             }
         }
-        
+
 stage('Docker Cleanup') {
+    when {
+        expression { return params.DOCKER_PRUNE == true }
+    }
     steps {
         script {
             echo "🧹 Cleaning Docker cache to prevent snapshot corruption and free space..."
@@ -191,6 +197,7 @@ stage('Docker Cleanup') {
         }
     }
 }
+
 
 stage('Docker Build (Parallel/Serial)') {
     steps {
