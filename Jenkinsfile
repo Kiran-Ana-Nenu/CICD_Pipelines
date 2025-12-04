@@ -180,6 +180,17 @@ ${paramText}""",
                 }
             }
         }
+        
+stage('Docker Cleanup') {
+    steps {
+        script {
+            echo "🧹 Cleaning Docker cache to prevent snapshot corruption and free space..."
+            sh '''
+                docker system prune --all --force --volumes || true
+            '''
+        }
+    }
+}
 
 stage('Docker Build (Parallel/Serial)') {
     steps {
@@ -187,8 +198,8 @@ stage('Docker Build (Parallel/Serial)') {
 
             echo "⏳ Initializing Buildx builder (avoiding snapshot corruption issues)..."
             sh '''
-                docker buildx rm default || true
-                docker buildx create --name default --use
+                docker buildx rm jenkins-builder || true
+                docker buildx create --name jenkins-builder --use
                 docker buildx inspect --bootstrap
             '''
 
@@ -253,7 +264,6 @@ stage('Docker Build (Parallel/Serial)') {
         }
     }
 }
-
 
         stage('Trivy Scan') {
             steps {
