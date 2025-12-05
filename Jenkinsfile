@@ -104,7 +104,8 @@ pipeline {
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        // IMAGES = '[]' // default
+        // Ensure TRIVY template filename here matches the file in your repo
+        TRIVY_TEMPLATE = "trivy-report-premium.tpl"
     }
 
     stages {
@@ -142,8 +143,8 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                         "nginx"      : "${env.DOCKER_REPO_PREFIX}-nginx:${env.IMAGE_TAG}"
                     ]
 
-                    // CPS-safe collect instead of spread operator
-                    def selected = params.BUILD_IMAGES?.split(",").collect { it.trim() }
+                    // CPS-safe parsing of BUILD_IMAGES param
+                    def selected = params.BUILD_IMAGES?.split(",")?.collect { it.trim() }
                     def selectedImages = [:]
 
                     if (!selected || selected.contains("all")) {
@@ -172,7 +173,8 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                     sh(params.DEBUG_MODE ? "set -x ; true" : "true")
                     checkout([$class: 'GitSCM',
                         branches: [[name: params.GIT_REF]],
-                        userRemoteConfigs: [[url: env.GIT_URL]]
+                        userRemoteConfigs: [[url: env.GIT_URL]],
+                        extensions: [[$class: 'CleanBeforeCheckout']]
                     ])
                 }
             }
@@ -217,10 +219,10 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                                     echo "\n==================== BUILDING ${name} ====================\n"
                                     sh """
                                         docker buildx build --load ${params.USE_CACHE ? "" : "--no-cache"} \
-                                        -f ${dockerPath}/${dockerFile} \
-                                        --build-arg APP_ROLE=${name} \
-                                        --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                                        -t ${image} .
+                                          -f ${dockerPath}/${dockerFile} \
+                                          --build-arg APP_ROLE=${name} \
+                                          --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                                          -t ${image} .
                                     """
                                 }
                             }
@@ -239,10 +241,10 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                             echo "\n==================== BUILDING ${name} ====================\n"
                             sh """
                                 docker buildx build --load ${params.USE_CACHE ? "" : "--no-cache"} \
-                                -f ${dockerPath}/${dockerFile} \
-                                --build-arg APP_ROLE=${name} \
-                                --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                                -t ${image} .
+                                  -f ${dockerPath}/${dockerFile} \
+                                  --build-arg APP_ROLE=${name} \
+                                  --build-arg APP_VERSION=${env.IMAGE_TAG} \
+                                  -t ${image} .
                             """
                         }
                     }
@@ -250,97 +252,93 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
             }
         }
 
-stage('Trivy Scan') {
-    steps {
-        script {
-            def images = readJSON(text: env.IMAGES)
-            def unstableImages = []
+        // ===== TRIVY SCAN (always produce full HTML, then separately check HIGH/CRITICAL) =====
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    def unstableImages = []
 
-            // Ensure template exists in workspace
-            def templatePath = "${env.WORKSPACE}/trivy-report-template.tpl"
-            if (!fileExists(templatePath)) {
-                error "❌ Trivy template not found at ${templatePath}. Please add trivy-report-template.tpl to workspace root."
-            }
-
-            images.each { name, image ->
-                echo "🔍 Trivy scanning image: ${image}"
-
-                // Run Trivy with HTML output
-                sh """
-                    trivy image \
-                        --format template \
-                        --template "@${templatePath}" \
-                        --exit-code 0 \
-                        --severity HIGH,CRITICAL \
-                        ${image} > trivy-${name}.html || true
-                """
-
-                // Sanity check: ensure HTML is not empty
-                if (!fileExists("trivy-${name}.html") || readFile("trivy-${name}.html").trim().length() == 0) {
-                    echo "⚠ Warning: Trivy report for ${name} is empty. Adding placeholder."
-                    writeFile file: "trivy-${name}.html", text: """
-                    <html>
-                        <head><title>Trivy Report - ${name}</title></head>
-                        <body>
-                            <h3>⚠ No report generated for ${name}. Possible scan failure or no vulnerabilities found.</h3>
-                        </body>
-                    </html>
-                    """
-                }
-
-                // Archive HTML report for download
-                archiveArtifacts artifacts: "trivy-${name}.html", allowEmptyArchive: true
-
-                // Detect vulnerabilities by inspecting HTML
-                def htmlContent = readFile("trivy-${name}.html")
-                def hasVulnerabilities = htmlContent.contains("CRITICAL") || htmlContent.contains("HIGH")
-
-                if (hasVulnerabilities) {
-                    unstableImages << name
-                    if (params.TRIVY_FAIL_ACTION == 'fail-build') {
-                        error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
-                    } else {
-                        currentBuild.result = 'UNSTABLE'
-                        echo "⚠ Marking build UNSTABLE due to vulnerabilities in ${name}"
+                    // Template path in workspace (must be present in repo)
+                    def templatePath = "${env.WORKSPACE}/${env.TRIVY_TEMPLATE}"
+                    if (!fileExists(templatePath)) {
+                        error "❌ Trivy template not found at ${templatePath}. Add ${env.TRIVY_TEMPLATE} to repo root."
                     }
-                } else {
-                    echo "🟢 ${name} passed vulnerability scan"
+
+                    images.each { name, image ->
+                        echo "🔍 Trivy scanning ${image} (full report + HC check)"
+
+                        // 1) Produce full HTML with all severities (so template always has data)
+                        sh """
+                            trivy image \
+                                --scanners vuln \
+                                --format template \
+                                --template "@${templatePath}" \
+                                --exit-code 0 \
+                                --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+                                ${image} > trivy-${name}.html || true
+                        """
+
+                        // 2) Guarantee non-empty HTML (fallback)
+                        def reportFile = "trivy-${name}.html"
+                        if (!fileExists(reportFile) || readFile(reportFile).trim().length() == 0) {
+                            echo "⚠ Trivy produced empty HTML for ${name} — writing fallback placeholder"
+                            writeFile file: reportFile, text: """
+                                <html><body><h3>⚠ Trivy report unavailable for ${name}</h3></body></html>
+                            """
+                        }
+
+                        // Archive for download
+                        archiveArtifacts artifacts: reportFile, allowEmptyArchive: false
+
+                        // 3) Run a quick Trivy check that exits 1 if HIGH/CRITICAL present (no output)
+                        def hcStatus = sh(
+                            returnStatus: true,
+                            script: "trivy image --severity HIGH,CRITICAL --exit-code 1 ${image} >/dev/null 2>&1"
+                        )
+
+                        if (hcStatus == 1) {
+                            // HIGH/CRITICAL found
+                            unstableImages << name
+                            if (params.TRIVY_FAIL_ACTION == 'fail-build') {
+                                error "❌ HIGH/CRITICAL vulnerabilities detected in ${name}"
+                            } else {
+                                currentBuild.result = 'UNSTABLE'
+                                echo "⚠ Marking build UNSTABLE due to HIGH/CRITICAL vulnerabilities in ${name}"
+                            }
+                        } else {
+                            echo "🟢 No HIGH/CRITICAL vulnerabilities found in ${name}"
+                        }
+                    }
+
+                    env.UNSTABLE_IMGS = unstableImages.join(",")
+                    if (unstableImages) {
+                        echo "\n🚨 UNSTABLE IMAGES DETECTED:\n${unstableImages.join('\n')}"
+                    } else {
+                        echo "\n🟢 All images passed Trivy check (no HIGH/CRITICAL)"
+                    }
                 }
             }
+        }
 
-            // Save list of unstable images
-            env.UNSTABLE_IMGS = unstableImages.join(",")
-
-            if (unstableImages) {
-                echo "\n🚨 UNSTABLE IMAGES DETECTED:"
-                unstableImages.each { println " - ${it}" }
-            } else {
-                echo "\n🟢 All images passed — no HIGH/CRITICAL vulnerabilities"
+        stage('Publish Security Reports') {
+            steps {
+                script {
+                    def images = readJSON(text: env.IMAGES)
+                    images.each { name, image ->
+                        // publishHTML requires the HTML Publisher plugin
+                        publishHTML(target: [
+                            reportName: "🔐 Trivy Report — ${name}",
+                            reportDir: ".",
+                            reportFiles: "trivy-${name}.html",
+                            keepAll: true,
+                            allowMissing: true,
+                            alwaysLinkToLastBuild: true
+                        ])
+                    }
+                }
             }
         }
-    }
-}
-
-stage('Publish Security Reports') {
-    steps {
-        script {
-            def images = readJSON(text: env.IMAGES)
-
-            images.each { name, image ->
-                // Publish HTML reports
-                publishHTML(target: [
-                    reportName: "🔐 Trivy Report — ${name}",
-                    reportDir: ".",
-                    reportFiles: "trivy-${name}.html",
-                    keepAll: true,
-                    allowMissing: true,
-                    alwaysLinkToLastBuild: true
-                ])
-            }
-        }
-    }
-}
-
 
         stage('Push Images to Docker Hub') {
             when { expression { params.PUSH_IMAGES } }
@@ -376,4 +374,3 @@ stage('Publish Security Reports') {
         failure { echo "❌ FAILED — see logs" }
     }
 }
-
