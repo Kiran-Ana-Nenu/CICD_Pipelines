@@ -24,16 +24,18 @@ pipeline {
     }
 
     environment {
+        CI_REPO = "${env.WORKSPACE}"                       // repo-one location
+        APP_REPO = "${env.WORKSPACE}/ssl_monitoring"                 // repo-two checkout location
         GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        TRIVY_TEMPLATE = "trivy-report-template.tpl"
-        CODE_DIR = "ssl_monitoring"
+        TRIVY_TEMPLATE = "${env.CI_REPO}/trivy-report-template.tpl"
     }
 
     stages {
+
         stage('Clean Workspace (Pre-build)') {
             when { expression { params.CLEAN_BEFORE } }
             steps { cleanWs() }
@@ -84,10 +86,9 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
             }
         }
 
-        stage('Checkout Code') {
+        stage('Checkout App Code') {
             steps {
-                script {
-                    sh(params.DEBUG_MODE ? "set -x ; true" : "true")
+                dir('app') {
                     checkout([$class: 'GitSCM',
                         branches: [[name: params.GIT_REF]],
                         userRemoteConfigs: [[url: env.GIT_URL]],
@@ -96,13 +97,6 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                 }
             }
         }
-stage('Debug Workspace') {
-    steps {
-        sh 'pwd'
-        sh 'ls -l'
-        sh 'ls -l scripts'
-    }
-}
 
         stage('Docker Cleanup and Docker Build (Parallel/Serial)') {
             steps {
@@ -120,7 +114,7 @@ stage('Debug Workspace') {
                     '''
 
                     def images = readJSON(text: env.IMAGES)
-                    def dockerPath = "docker"
+                    def dockerPath = "${env.APP_REPO}/docker"  // app repo Dockerfiles
 
                     def buildImage = { name, image ->
                         def dockerFile = ""
@@ -137,10 +131,11 @@ stage('Debug Workspace') {
                               -f ${dockerPath}/${dockerFile} \
                               --build-arg APP_ROLE=${name} \
                               --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                              -t ${image} .
+                              -t ${image} ${env.APP_REPO}
                         """
+
                         echo "🔍 Running Trivy scan for ${name}"
-                        sh "bash scripts/trivy-report.sh ${image} ${env.IMAGE_TAG} trivy-reports"
+                        sh "bash ${env.CI_REPO}/scripts/trivy-report.sh ${image} ${env.IMAGE_TAG} ${env.CI_REPO}/trivy-reports"
                         archiveArtifacts artifacts: "trivy-reports/trivy-${name}.html", allowEmptyArchive: false
                     }
 
@@ -157,7 +152,7 @@ stage('Debug Workspace') {
 
         stage('Trivy Scan') {
             steps {
-                sh "bash scripts/generate-trivy-summary.sh"
+                sh "bash ${env.CI_REPO}/scripts/generate-trivy-summary.sh"
                 archiveArtifacts artifacts: "trivy-reports/trivy-summary.html", allowEmptyArchive: false
             }
         }
