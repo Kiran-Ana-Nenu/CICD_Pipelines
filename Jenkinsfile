@@ -24,13 +24,13 @@ pipeline {
     }
 
     environment {
-        GIT_URL = "git@github.com:org/repo-two.git"
+        GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
-        DOCKER_REPO_PREFIX = "myorg"
+        DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
         TRIVY_TEMPLATE = "trivy-report-template.tpl"
-        CODE_DIR = "repo-two"
+        CODE_DIR = "ssl_monitoring"
     }
 
     stages {
