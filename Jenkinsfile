@@ -104,10 +104,8 @@ pipeline {
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        // Ensure TRIVY template filename here matches the file in your repo
-        TRIVY_TEMPLATE = "trivy-report-premium.tpl"
+        TRIVY_TEMPLATE = "trivy-report-template.tpl"
     }
-
     stages {
 
         stage('Clean Workspace (Pre-build)') {
@@ -268,7 +266,7 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                     images.each { name, image ->
                         echo "🔍 Trivy scanning ${image} (full report + HC check)"
 
-                        // 1) Produce full HTML with all severities (so template always has data)
+                        // 1) Produce full HTML with all severities so template always has data
                         sh """
                             trivy image \
                                 --scanners vuln \
@@ -326,7 +324,7 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                 script {
                     def images = readJSON(text: env.IMAGES)
                     images.each { name, image ->
-                        // publishHTML requires the HTML Publisher plugin
+                        // publishHTML requires the HTML Publisher plugin (optional)
                         publishHTML(target: [
                             reportName: "🔐 Trivy Report — ${name}",
                             reportDir: ".",
