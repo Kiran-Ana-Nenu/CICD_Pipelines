@@ -96,6 +96,13 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                 }
             }
         }
+stage('Debug Workspace') {
+    steps {
+        sh 'pwd'
+        sh 'ls -l'
+        sh 'ls -l scripts'
+    }
+}
 
         stage('Docker Cleanup and Docker Build (Parallel/Serial)') {
             steps {
