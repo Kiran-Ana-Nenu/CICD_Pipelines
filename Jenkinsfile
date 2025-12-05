@@ -25,7 +25,7 @@ pipeline {
 
     environment {
         CI_REPO = "${env.WORKSPACE}"                       // repo-one location
-        APP_REPO = "${env.WORKSPACE}/ssl_monitoring"                 // repo-two checkout location
+        APP_REPO = "${env.WORKSPACE}/app"                 // repo-two checkout location
         GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
