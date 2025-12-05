@@ -24,14 +24,12 @@ pipeline {
     }
 
     environment {
-        CI_REPO = "${env.WORKSPACE}"                       // repo-one location
-        APP_REPO = "${env.WORKSPACE}/app"                 // repo-two checkout location
-        GIT_URL = "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"
+        APP_REPO = "${env.WORKSPACE}"                       // ssl_monitoring repo root
         DOCKER_HUB_URL = "https://index.docker.io/v1/"
         DOCKER_REPO_PREFIX = "kiranpayyavuala/sslexpire_application"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
         APPROVERS = "admin,adminuser"
-        TRIVY_TEMPLATE = "${env.CI_REPO}/trivy-report-template.tpl"
+        TRIVY_TEMPLATE = "${env.WORKSPACE}/scripts/trivy-report-template.tpl"
     }
 
     stages {
@@ -86,12 +84,13 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
             }
         }
 
-        stage('Checkout App Code') {
+        stage('Checkout Code') {
             steps {
-                dir('app') {
+                script {
+                    sh(params.DEBUG_MODE ? "set -x ; true" : "true")
                     checkout([$class: 'GitSCM',
                         branches: [[name: params.GIT_REF]],
-                        userRemoteConfigs: [[url: env.GIT_URL]],
+                        userRemoteConfigs: [[url: "https://github.com/Kiran-Ana-Nenu/ssl_monitoring.git"]],
                         extensions: [[$class: 'CleanBeforeCheckout']]
                     ])
                 }
@@ -114,7 +113,7 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                     '''
 
                     def images = readJSON(text: env.IMAGES)
-                    def dockerPath = "${env.APP_REPO}/docker"  // app repo Dockerfiles
+                    def dockerPath = "${env.APP_REPO}/docker"
 
                     def buildImage = { name, image ->
                         def dockerFile = ""
@@ -131,11 +130,11 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
                               -f ${dockerPath}/${dockerFile} \
                               --build-arg APP_ROLE=${name} \
                               --build-arg APP_VERSION=${env.IMAGE_TAG} \
-                              -t ${image} ${env.APP_REPO}
+                              -t ${image} ${APP_REPO}
                         """
 
                         echo "🔍 Running Trivy scan for ${name}"
-                        sh "bash ${env.CI_REPO}/scripts/trivy-report.sh ${image} ${env.IMAGE_TAG} ${env.CI_REPO}/trivy-reports"
+                        sh "bash ${APP_REPO}/scripts/trivy-report.sh ${image} ${env.IMAGE_TAG} ${APP_REPO}/trivy-reports"
                         archiveArtifacts artifacts: "trivy-reports/trivy-${name}.html", allowEmptyArchive: false
                     }
 
@@ -150,9 +149,9 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
             }
         }
 
-        stage('Trivy Scan') {
+        stage('Trivy Scan Summary') {
             steps {
-                sh "bash ${env.CI_REPO}/scripts/generate-trivy-summary.sh"
+                sh "bash ${APP_REPO}/scripts/generate-trivy-summary.sh"
                 archiveArtifacts artifacts: "trivy-reports/trivy-summary.html", allowEmptyArchive: false
             }
         }
@@ -160,7 +159,7 @@ ${paramText}""", ok: 'Approve', submitter: env.APPROVERS
         stage('Publish Security Reports') {
             steps {
                 publishHTML(target: [
-                    reportName: "🔐 Trivy Report",
+                    reportName: "🔐 Trivy Reports",
                     reportDir: "trivy-reports",
                     reportFiles: "*.html",
                     keepAll: true,
